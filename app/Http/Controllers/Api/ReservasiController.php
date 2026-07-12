@@ -1,0 +1,386 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Akomodasi;
+use App\Models\Notifikasi;
+use App\Models\Pulau;
+use App\Models\Reservasi;
+use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+
+class ReservasiController extends Controller
+{
+    // Daftar tanggal per-malam antara check-in (inklusif) dan check-out (eksklusif).
+    // Contoh: check-in 1 Jan, check-out 3 Jan -> ['2025-01-01', '2025-01-02'] (2 malam).
+    private function daftarTanggalMalam(string $checkin, string $checkout): array
+    {
+        $tanggal = [];
+        $cursor = Carbon::parse($checkin);
+        $akhir = Carbon::parse($checkout);
+
+        while ($cursor->lt($akhir)) {
+            $tanggal[] = $cursor->format('Y-m-d');
+            $cursor->addDay();
+        }
+
+        return $tanggal;
+    }
+
+    // Reservasi VALID yang tanggal kunjungannya (atau tanggal_selesai kalau menginap) sudah
+    // lewat, otomatis ditandai 'selesai' setiap kali ada yang membuka daftar reservasi — jadi
+    // tidak butuh cron/scheduler terpisah yang harus dinyalakan manual di komputer lokal.
+    // Begitu selesai, wisatawan dikirim notifikasi ajakan kasih ulasan (syarat ulasan: status selesai).
+    private function tandaiReservasiLewatJadwalSelesai(): void
+    {
+        Reservasi::where('status', 'valid')
+            ->where(function ($q) {
+                $q->where(function ($q2) {
+                    $q2->where('jenis', 'one_day_trip')->whereDate('tanggal_kunjungan', '<', now()->toDateString());
+                })->orWhere(function ($q2) {
+                    $q2->where('jenis', 'menginap')->whereDate('tanggal_selesai', '<', now()->toDateString());
+                });
+            })
+            ->with('pulau')
+            ->get()
+            ->each(function ($r) {
+                $r->update(['status' => 'selesai']);
+
+                Notifikasi::create([
+                    'user_id' => $r->user_id,
+                    'judul' => 'Perjalanan Selesai',
+                    'pesan' => "Kunjunganmu ke {$r->pulau->nama} sudah selesai. Yuk beri ulasan pengalamanmu!",
+                    'tipe' => 'reservasi_selesai',
+                ]);
+            });
+    }
+
+    // GET /api/reservasi — daftar reservasi, difilter sesuai role yang login
+    public function index(Request $request)
+    {
+        $this->tandaiReservasiLewatJadwalSelesai();
+
+        $user = $request->user();
+
+        if ($user->isWisatawan()) {
+            $query = Reservasi::where('user_id', $user->id);
+        } elseif ($user->isPengantarPulau()) {
+            // Pengantar Pulau memverifikasi SEMUA reservasi dari semua pulau
+            $query = Reservasi::query();
+            if ($request->has('status')) {
+                $query->where('status', $request->status);
+            }
+        } elseif ($user->isPengelolaPulau()) {
+            // Pengelola Pulau melihat reservasi VALID + SELESAI (one day trip & menginap) khusus
+            // pulaunya sendiri — supaya tahu siapa saja yang berkunjung, tidak cuma yang menginap.
+            // "selesai" ikut disertakan supaya kunjungan yang sudah lewat tanggal (otomatis
+            // ditandai selesai) tetap terhitung di Statistik & Ulasan, tidak hilang begitu saja.
+            // Dashboard (yang cuma mau tampilkan reservasi yang masih berjalan) menyaring sendiri
+            // status === 'valid' di sisi frontend.
+            // Bisa difilter per jenis lewat query ?jenis=menginap / ?jenis=one_day_trip.
+            $query = Reservasi::where('pulau_id', $user->pulau_id)->whereIn('status', ['valid', 'selesai']);
+
+            if ($request->has('jenis')) {
+                $query->where('jenis', $request->jenis);
+            }
+        } else {
+            return response()->json(['message' => 'Role tidak dikenali.'], 403);
+        }
+
+        $reservasi = $query->with(['wisatawan', 'pulau', 'akomodasi'])
+            ->orderByDesc('created_at')
+            ->paginate(20);
+
+        return response()->json($reservasi);
+    }
+
+    public function show(Request $request, Reservasi $reservasi)
+    {
+        $user = $request->user();
+
+        $bolehLihat =
+            ($user->isWisatawan() && $reservasi->user_id === $user->id) ||
+            $user->isPengantarPulau() ||
+            ($user->isPengelolaPulau() && $reservasi->pulau_id === $user->pulau_id);
+
+        if (! $bolehLihat) {
+            return response()->json(['message' => 'Anda tidak berhak melihat reservasi ini.'], 403);
+        }
+
+        $reservasi->load(['wisatawan', 'pulau', 'akomodasi', 'verifikator']);
+        // Dikirim eksplisit supaya frontend tidak perlu duplikat aturan H-2 sendiri — cukup pakai
+        // hasil dari sini, dijamin selalu sinkron dengan aturan yang dipakai backend saat submit.
+        $reservasi->bisa_ajukan_batal = $reservasi->bisaAjukanBatal();
+
+        return response()->json($reservasi);
+    }
+
+    // POST /api/reservasi — buat reservasi baru (khusus wisatawan)
+    // PENTING (race condition): akomodasi punya 1 angka jumlah_unit tetap (bukan kuota per
+    // tanggal). Sisa unit di tanggal tertentu dihitung dinamis = jumlah_unit - jumlah reservasi
+    // aktif (menunggu_verifikasi/valid) yang tanggalnya overlap. Supaya 2 wisatawan tidak bisa
+    // lolos berdua untuk unit tersisa terakhir, baris Akomodasi dikunci (lockForUpdate) selama
+    // transaksi supaya pengecekan + insert reservasi baru berjalan atomik.
+    // JANGAN hapus/ganti bagian ini jadi pengecekan biasa tanpa lock.
+    public function store(Request $request)
+    {
+        $user = $request->user();
+
+        if (! $user->isWisatawan()) {
+            return response()->json(['message' => 'Hanya wisatawan yang bisa membuat reservasi.'], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'pulau_id' => 'required|exists:pulau,id',
+            'jenis' => 'required|in:one_day_trip,menginap',
+            'akomodasi_id' => 'nullable|exists:akomodasi,id',
+            'bawa_tenda_sendiri' => 'sometimes|boolean',
+            'tanggal_kunjungan' => 'required|date|after_or_equal:today',
+            'tanggal_selesai' => 'required_if:jenis,menginap|nullable|date|after:tanggal_kunjungan',
+            'jumlah_orang' => 'required|integer|min:1',
+            'bukti_transfer' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $bawaTendaSendiri = $request->boolean('bawa_tenda_sendiri');
+
+        // Kalau menginap: wajib pilih salah satu — akomodasi berbayar milik pengelola, ATAU
+        // centang bawa tenda sendiri (gratis, tidak masuk hitungan sisa unit akomodasi manapun).
+        if ($request->jenis === 'menginap' && ! $bawaTendaSendiri && ! $request->akomodasi_id) {
+            return response()->json([
+                'message' => 'Pilih salah satu akomodasi, atau centang "Bawa Tenda Sendiri" kalau tidak perlu akomodasi.',
+            ], 422);
+        }
+
+        $pulau = Pulau::findOrFail($request->pulau_id);
+
+        // Tarif penyeberangan adalah biaya global (bukan per-pulau), diatur di config/services.php
+        // lihat README bagian konfigurasi tambahan.
+        $tarifPenyeberangan = (float) config('services.penyeberangan.tarif_per_orang', 50000);
+
+        $biayaPenyeberangan = $tarifPenyeberangan * $request->jumlah_orang;
+        $biayaTiketMasuk = (float) $pulau->harga_tiket_masuk * $request->jumlah_orang;
+        $biayaAkomodasi = 0;
+        $malamList = [];
+
+        if ($request->jenis === 'menginap') {
+            $malamList = $this->daftarTanggalMalam($request->tanggal_kunjungan, $request->tanggal_selesai);
+        }
+
+        try {
+            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $biayaTiketMasuk, $malamList, $bawaTendaSendiri, &$biayaAkomodasi) {
+                if ($request->jenis === 'menginap' && ! $bawaTendaSendiri) {
+                    // Kunci baris akomodasi ini supaya pengecekan sisa unit + insert reservasi
+                    // berjalan atomik (2 request bersamaan tidak bisa lolos berdua di unit terakhir).
+                    $akomodasi = Akomodasi::where('id', $request->akomodasi_id)->lockForUpdate()->firstOrFail();
+
+                    // Cek sisa unit di SETIAP malam yang dipesan — kalau salah satu malam penuh,
+                    // seluruh transaksi dibatalkan (tidak ada yang perlu di-rollback manual karena
+                    // belum ada yang diubah di database sampai titik ini).
+                    foreach ($malamList as $tanggalMalam) {
+                        if ($akomodasi->sisaUnitPadaTanggal($tanggalMalam) < 1) {
+                            throw new \RuntimeException("Unit akomodasi \"{$akomodasi->nama}\" sudah penuh untuk tanggal {$tanggalMalam}.");
+                        }
+                    }
+
+                    $biayaAkomodasi = (float) $akomodasi->harga_per_malam * count($malamList);
+                }
+                // Bawa tenda sendiri: tidak ada akomodasi yang dikunci/dicek, biaya akomodasi tetap 0.
+
+                $total = $biayaPenyeberangan + $biayaTiketMasuk + $biayaAkomodasi;
+
+                return Reservasi::create([
+                    'user_id' => $user->id,
+                    'pulau_id' => $pulau->id,
+                    'jenis' => $request->jenis,
+                    'akomodasi_id' => ($request->jenis === 'menginap' && ! $bawaTendaSendiri) ? $request->akomodasi_id : null,
+                    'bawa_tenda_sendiri' => $request->jenis === 'menginap' ? $bawaTendaSendiri : false,
+                    'tanggal_kunjungan' => $request->tanggal_kunjungan,
+                    'tanggal_selesai' => $request->jenis === 'menginap' ? $request->tanggal_selesai : null,
+                    'jumlah_orang' => $request->jumlah_orang,
+                    'biaya_penyeberangan' => $biayaPenyeberangan,
+                    'biaya_tiket_masuk' => $biayaTiketMasuk,
+                    'biaya_akomodasi' => $biayaAkomodasi,
+                    'total_bayar' => $total,
+                    'bukti_transfer' => $request->bukti_transfer,
+                    'status' => 'menunggu_verifikasi',
+                ]);
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        // Beri tahu semua akun Pengantar Pulau supaya reservasi baru ini segera diverifikasi.
+        $jenisLabel = $reservasi->jenis === 'menginap' ? 'Menginap' : 'One Day Trip';
+        User::where('role', 'pengantar_pulau')->get()->each(function ($pengantar) use ($reservasi, $jenisLabel, $pulau) {
+            Notifikasi::create([
+                'user_id' => $pengantar->id,
+                'judul' => 'Reservasi Baru Menunggu Verifikasi',
+                'pesan' => "{$reservasi->wisatawan->name} mengajukan reservasi {$jenisLabel} ke {$pulau->nama} untuk tanggal {$reservasi->tanggal_kunjungan->format('d-m-Y')}.",
+                'tipe' => 'reservasi_baru',
+            ]);
+        });
+
+        return response()->json(['message' => 'Reservasi berhasil dibuat, menunggu verifikasi.', 'data' => $reservasi], 201);
+    }
+
+    // PATCH /api/reservasi/{reservasi}/verifikasi — khusus pengantar_pulau
+    public function verifikasi(Request $request, Reservasi $reservasi)
+    {
+        $user = $request->user();
+
+        if (! $user->isPengantarPulau()) {
+            return response()->json(['message' => 'Hanya Pengantar Pulau yang bisa memverifikasi.'], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:valid,ditolak',
+            'catatan_penolakan' => 'required_if:status,ditolak|nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        DB::transaction(function () use ($request, $user, $reservasi) {
+            // Catatan: tidak perlu "kembalikan kuota" manual — begitu status berubah dari
+            // menunggu_verifikasi, reservasi ini otomatis tidak terhitung lagi di
+            // Akomodasi::sisaUnitPadaTanggal() karena hitungannya dinamis dari status reservasi.
+            $reservasi->update([
+                'status' => $request->status,
+                'catatan_penolakan' => $request->status === 'ditolak' ? $request->catatan_penolakan : null,
+                'verified_by' => $user->id,
+                'verified_at' => now(),
+            ]);
+
+            Notifikasi::create([
+                'user_id' => $reservasi->user_id,
+                'judul' => $request->status === 'valid' ? 'Reservasi Anda Valid' : 'Reservasi Anda Ditolak',
+                'pesan' => $request->status === 'valid'
+                    ? 'Bukti transfer Anda telah diverifikasi. Sampai jumpa di hari kunjungan!'
+                    : 'Bukti transfer Anda ditolak. Alasan: '.$request->catatan_penolakan,
+                'tipe' => $request->status === 'valid' ? 'verifikasi_valid' : 'verifikasi_ditolak',
+            ]);
+
+            // Reservasi yang baru VALID (one day trip maupun menginap) juga diberitahukan ke
+            // Pengelola Pulau terkait, supaya dia tahu siapa saja yang berkunjung ke pulaunya —
+            // bukan cuma yang menginap, karena dia juga yang urus tiket masuk & wahana harian.
+            if ($request->status === 'valid') {
+                $pengelola = User::where('role', 'pengelola_pulau')->where('pulau_id', $reservasi->pulau_id)->first();
+
+                if ($pengelola) {
+                    // "Bawa Tenda Sendiri" tidak punya akomodasi (akomodasi_id NULL) — jangan
+                    // baca $reservasi->akomodasi->nama langsung, pakai label ini kalau null.
+                    $labelAkomodasi = $reservasi->akomodasi->nama ?? 'Bawa Tenda Sendiri';
+
+                    $pesan = $reservasi->jenis === 'menginap'
+                        ? "{$reservasi->wisatawan->name} akan menginap di {$labelAkomodasi} mulai {$reservasi->tanggal_kunjungan->format('d-m-Y')}"
+                            .($reservasi->tanggal_selesai ? " s/d {$reservasi->tanggal_selesai->format('d-m-Y')}." : '.')
+                        : "{$reservasi->wisatawan->name} akan berkunjung (One Day Trip) pada {$reservasi->tanggal_kunjungan->format('d-m-Y')} — {$reservasi->jumlah_orang} orang.";
+
+                    Notifikasi::create([
+                        'user_id' => $pengelola->id,
+                        'judul' => $reservasi->jenis === 'menginap' ? 'Reservasi Menginap Baru' : 'Kunjungan One Day Trip Baru',
+                        'pesan' => $pesan,
+                        'tipe' => $reservasi->jenis === 'menginap' ? 'reservasi_menginap_baru' : 'reservasi_one_day_baru',
+                    ]);
+                }
+            }
+        });
+
+        return response()->json(['message' => 'Status reservasi berhasil diperbarui.', 'data' => $reservasi->fresh()]);
+    }
+
+    // POST /api/reservasi/{reservasi}/ajukan-batal — khusus wisatawan pemilik reservasi
+    public function ajukanPembatalan(Request $request, Reservasi $reservasi)
+    {
+        $user = $request->user();
+
+        if (! $user->isWisatawan() || $reservasi->user_id !== $user->id) {
+            return response()->json(['message' => 'Anda tidak berhak mengajukan pembatalan ini.'], 403);
+        }
+
+        if (! $reservasi->bisaAjukanBatal()) {
+            return response()->json([
+                'message' => 'Pembatalan hanya bisa diajukan minimal H-2 sebelum tanggal kunjungan, dan reservasi harus berstatus valid.',
+            ], 422);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'alasan_pembatalan' => 'required|in:cuaca_buruk,sakit_mendadak,perubahan_jadwal,lainnya',
+            'keterangan_pembatalan' => 'required_if:alasan_pembatalan,lainnya|nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $reservasi->update([
+            'status' => 'pengajuan_batal',
+            'alasan_pembatalan' => $request->alasan_pembatalan,
+            'keterangan_pembatalan' => $request->keterangan_pembatalan,
+            'tanggal_pengajuan_batal' => now(),
+            'status_pengembalian_dana' => 'belum_diproses',
+        ]);
+
+        return response()->json(['message' => 'Pengajuan pembatalan berhasil dikirim.', 'data' => $reservasi]);
+    }
+
+    // PATCH /api/reservasi/{reservasi}/proses-batal — khusus pengantar_pulau (setuju/tolak + keputusan refund)
+    public function prosesPembatalan(Request $request, Reservasi $reservasi)
+    {
+        $user = $request->user();
+
+        if (! $user->isPengantarPulau()) {
+            return response()->json(['message' => 'Hanya Pengantar Pulau yang bisa memproses pembatalan.'], 403);
+        }
+
+        if ($reservasi->status !== 'pengajuan_batal') {
+            return response()->json(['message' => 'Reservasi ini tidak sedang dalam status pengajuan pembatalan.'], 422);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'disetujui' => 'required|boolean',
+            'status_pengembalian_dana' => 'required_if:disetujui,true|nullable|in:disetujui,ditolak',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        DB::transaction(function () use ($request, $reservasi) {
+            if ($request->boolean('disetujui')) {
+                // Pembatalan disetujui: status berubah jadi 'dibatalkan' sehingga otomatis
+                // tidak terhitung lagi di Akomodasi::sisaUnitPadaTanggal() (tidak perlu kuota manual).
+                $reservasi->update([
+                    'status' => 'dibatalkan',
+                    'status_pengembalian_dana' => $request->status_pengembalian_dana,
+                ]);
+            } else {
+                // Pembatalan ditolak: reservasi kembali berstatus valid seperti semula
+                $reservasi->update([
+                    'status' => 'valid',
+                    'status_pengembalian_dana' => null,
+                ]);
+            }
+
+            Notifikasi::create([
+                'user_id' => $reservasi->user_id,
+                'judul' => $request->boolean('disetujui') ? 'Pembatalan Disetujui' : 'Pengajuan Pembatalan Ditolak',
+                'pesan' => $request->boolean('disetujui')
+                    ? 'Pengajuan pembatalan Anda telah disetujui.'
+                    : 'Pengajuan pembatalan Anda ditolak, reservasi tetap berjalan sesuai jadwal.',
+                'tipe' => $request->boolean('disetujui') ? 'pembatalan_disetujui' : 'pembatalan_ditolak',
+            ]);
+        });
+
+        return response()->json(['message' => 'Pengajuan pembatalan berhasil diproses.', 'data' => $reservasi->fresh()]);
+    }
+}
