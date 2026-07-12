@@ -1,0 +1,70 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Pulau extends Model
+{
+    use HasFactory;
+
+    protected $table = 'pulau';
+
+    protected $fillable = [
+        'nama',
+        'foto_utama',
+        'luas',
+        'deskripsi',
+        'badge',
+        'latitude',
+        'longitude',
+        'harga_tiket_masuk',
+        'jam_operasional_genset',
+        'regulasi',
+        'fasilitas',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'fasilitas' => 'array',
+        ];
+    }
+
+    public function galeriFoto()
+    {
+        return $this->hasMany(GaleriFotoPulau::class, 'pulau_id');
+    }
+
+    public function wahanaKegiatan()
+    {
+        return $this->hasMany(WahanaKegiatan::class, 'pulau_id');
+    }
+
+    public function akomodasi()
+    {
+        return $this->hasMany(Akomodasi::class, 'pulau_id');
+    }
+
+    public function reservasi()
+    {
+        return $this->hasMany(Reservasi::class, 'pulau_id');
+    }
+
+    public function ulasan()
+    {
+        return $this->hasMany(Ulasan::class, 'pulau_id');
+    }
+
+    public function pengelola()
+    {
+        // Akun pengelola_pulau yang terhubung ke pulau ini (idealnya 1 akun)
+        return $this->hasMany(User::class, 'pulau_id');
+    }
+
+    public function ratingRataRata(): float
+    {
+        return round($this->ulasan()->avg('rating') ?? 0, 1);
+    }
+}
