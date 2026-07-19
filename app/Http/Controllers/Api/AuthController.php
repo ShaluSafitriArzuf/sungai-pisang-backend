@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
@@ -121,5 +122,61 @@ class AuthController extends Controller
         $user->update(['password' => Hash::make($request->password_baru)]);
 
         return response()->json(['message' => 'Password berhasil diganti.']);
+    }
+
+    // POST /api/lupa-password — dipakai halaman "Lupa Password" (belum login).
+    // Selama MAIL_MAILER masih "log" (belum ada SMTP asli di .env), link reset TIDAK terkirim
+    // sebagai email sungguhan — cukup buka storage/logs/laravel.log untuk mengambil link-nya.
+    // Begitu SMTP asli diisi di .env, tanpa ubah kode apa pun, email akan benar-benar terkirim.
+    public function lupaPassword(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        // Selalu balas pesan yang sama baik email terdaftar atau tidak, supaya orang lain
+        // tidak bisa dipakai untuk menebak-nebak email mana saja yang punya akun di sistem ini.
+        Password::sendResetLink($request->only('email'));
+
+        return response()->json([
+            'message' => 'Kalau email tersebut terdaftar, link reset password sudah dikirim.',
+        ]);
+    }
+
+    // POST /api/reset-password — halaman "Reset Password" (dari link/token di atas)
+    public function resetPassword(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'token' => 'required|string',
+            'email' => 'required|email',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $status = Password::reset(
+            $request->only('email', 'password', 'password_confirmation', 'token'),
+            function (User $user, string $password) {
+                $user->update(['password' => Hash::make($password)]);
+                // Cabut semua token lama supaya sesi login sebelumnya (kalau ada) ikut terputus.
+                $user->tokens()->delete();
+            }
+        );
+
+        if ($status !== Password::PASSWORD_RESET) {
+            return response()->json([
+                'message' => $status === Password::INVALID_TOKEN
+                    ? 'Link reset ini sudah tidak berlaku. Coba minta link baru.'
+                    : 'Gagal reset password. Coba lagi.',
+            ], 422);
+        }
+
+        return response()->json(['message' => 'Password berhasil direset, silakan login dengan password baru.']);
     }
 }

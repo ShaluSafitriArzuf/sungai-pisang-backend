@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AkomodasiController;
 use App\Http\Controllers\Api\AkomodasiFotoController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\GaleriFotoController;
+use App\Http\Controllers\Api\GoogleAuthController;
 use App\Http\Controllers\Api\ManifestController;
 use App\Http\Controllers\Api\NotifikasiController;
 use App\Http\Controllers\Api\PetaController;
@@ -20,6 +21,12 @@ use Illuminate\Support\Facades\Route;
 */
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/lupa-password', [AuthController::class, 'lupaPassword']);
+Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+
+// Redirect biasa (bukan dipanggil lewat axios/fetch) — makanya boleh di luar grup auth:sanctum.
+Route::get('/auth/google/redirect', [GoogleAuthController::class, 'redirect']);
+Route::get('/auth/google/callback', [GoogleAuthController::class, 'callback']);
 
 Route::get('/pulau', [PulauController::class, 'index']);
 Route::get('/pulau/{pulau}', [PulauController::class, 'show']);
