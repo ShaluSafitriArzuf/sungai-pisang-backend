@@ -42,11 +42,16 @@ class GoogleAuthController extends Controller
         $user = User::where('email', $googleUser->getEmail())->first();
 
         if (! $user) {
+            // google_id CUMA diisi di sini (saat akun baru dibuat lewat Google). Kalau akun lama
+            // (dibuat manual, sudah punya password asli) kebetulan login lewat Google karena
+            // emailnya sama, google_id-nya SENGAJA tidak diisi — supaya menu "Ganti Password"
+            // di frontend tetap muncul buat dia (lihat catatan di Profil.jsx sisi frontend).
             $user = User::create([
                 'name' => $googleUser->getName() ?: $googleUser->getNickname() ?: 'Pengguna Google',
                 'email' => $googleUser->getEmail(),
                 'password' => Hash::make(Str::random(40)),
                 'role' => 'wisatawan',
+                'google_id' => $googleUser->getId(),
             ]);
         }
 
