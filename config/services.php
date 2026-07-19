@@ -39,4 +39,10 @@ return [
         'tarif_per_orang' => env('TARIF_PENYEBERANGAN_PER_ORANG', 50000),
     ],
 
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET'),
+        'redirect' => env('GOOGLE_REDIRECT_URI'),
+    ],
+
 ];
