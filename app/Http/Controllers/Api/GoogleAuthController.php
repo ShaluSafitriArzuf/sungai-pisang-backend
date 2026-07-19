@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 
@@ -28,6 +29,10 @@ class GoogleAuthController extends Controller
         try {
             $googleUser = Socialite::driver('google')->stateless()->user();
         } catch (\Throwable $e) {
+            // Dicatat ke storage/logs/laravel.log supaya kita tahu penyebab pastinya —
+            // pesan ke user sengaja dibuat umum, tidak menampilkan detail teknis ke publik.
+            Log::error('Login Google gagal: '.$e->getMessage());
+
             return redirect("{$frontendUrl}/login?google_error=".urlencode('Login Google gagal, coba lagi.'));
         }
 
