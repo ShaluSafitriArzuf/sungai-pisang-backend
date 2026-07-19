@@ -134,6 +134,16 @@ class ReservasiController extends Controller
             return response()->json(['message' => 'Hanya wisatawan yang bisa membuat reservasi.'], 403);
         }
 
+        // Nomor HP wajib diisi dulu sebelum reservasi pertama — supaya Pengantar/Pengelola Pulau
+        // punya cara menghubungi wisatawan. Ini berlaku utk SEMUA akun (bukan cuma yg dari Google),
+        // karena dari awal no_hp memang opsional saat registrasi manual.
+        if (! $user->no_hp) {
+            return response()->json([
+                'message' => 'Lengkapi nomor HP di halaman Profil dulu sebelum membuat reservasi.',
+                'perlu_lengkapi_profil' => true,
+            ], 422);
+        }
+
         $validator = Validator::make($request->all(), [
             'pulau_id' => 'required|exists:pulau,id',
             'jenis' => 'required|in:one_day_trip,menginap',
