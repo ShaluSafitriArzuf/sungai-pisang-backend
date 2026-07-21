@@ -55,6 +55,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:wisatawan')->group(function () {
         Route::post('/reservasi', [ReservasiController::class, 'store']);
         Route::post('/reservasi/{reservasi}/ajukan-batal', [ReservasiController::class, 'ajukanPembatalan']);
+        Route::post('/reservasi/{reservasi}/upload-ulang-bukti', [ReservasiController::class, 'uploadUlangBukti']);
         Route::post('/ulasan', [UlasanController::class, 'store']);
     });
 

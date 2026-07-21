@@ -52,6 +52,7 @@ class ReservasiController extends Controller
 
                 Notifikasi::create([
                     'user_id' => $r->user_id,
+                    'reservasi_id' => $r->id,
                     'judul' => 'Perjalanan Selesai',
                     'pesan' => "Kunjunganmu ke {$r->pulau->nama} sudah selesai. Yuk beri ulasan pengalamanmu!",
                     'tipe' => 'reservasi_selesai',
@@ -232,6 +233,7 @@ class ReservasiController extends Controller
         User::where('role', 'pengantar_pulau')->get()->each(function ($pengantar) use ($reservasi, $jenisLabel, $pulau) {
             Notifikasi::create([
                 'user_id' => $pengantar->id,
+                'reservasi_id' => $reservasi->id,
                 'judul' => 'Reservasi Baru Menunggu Verifikasi',
                 'pesan' => "{$reservasi->wisatawan->name} mengajukan reservasi {$jenisLabel} ke {$pulau->nama} untuk tanggal {$reservasi->tanggal_kunjungan->format('d-m-Y')}.",
                 'tipe' => 'reservasi_baru',
@@ -239,6 +241,57 @@ class ReservasiController extends Controller
         });
 
         return response()->json(['message' => 'Reservasi berhasil dibuat, menunggu verifikasi.', 'data' => $reservasi], 201);
+    }
+
+    // POST /api/reservasi/{reservasi}/upload-ulang-bukti — khusus wisatawan pemilik reservasi,
+    // dipakai kalau reservasinya DITOLAK gara-gara bukti transfer kurang jelas/salah upload.
+    // Daripada wisatawan harus buat reservasi baru dari nol (ribet, hitung ulang harga, dsb),
+    // dia cukup unggah ulang bukti transfer untuk reservasi yang sama — status balik ke
+    // menunggu_verifikasi supaya Pengantar Pulau mengecek lagi.
+    public function uploadUlangBukti(Request $request, Reservasi $reservasi)
+    {
+        $user = $request->user();
+
+        if (! $user->isWisatawan() || $reservasi->user_id !== $user->id) {
+            return response()->json(['message' => 'Anda tidak berhak mengubah reservasi ini.'], 403);
+        }
+
+        if ($reservasi->status !== 'ditolak') {
+            return response()->json(['message' => 'Upload ulang bukti transfer hanya bisa dilakukan untuk reservasi yang ditolak.'], 422);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'bukti_transfer' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        DB::transaction(function () use ($request, $reservasi) {
+            $reservasi->update([
+                'bukti_transfer' => $request->bukti_transfer,
+                'status' => 'menunggu_verifikasi',
+                'catatan_penolakan' => null,
+                'verified_by' => null,
+                'verified_at' => null,
+            ]);
+
+            // Beri tahu lagi semua akun Pengantar Pulau, sama seperti reservasi baru — karena
+            // dari sisi mereka ini butuh diverifikasi ulang lagi.
+            $jenisLabel = $reservasi->jenis === 'menginap' ? 'Menginap' : 'One Day Trip';
+            User::where('role', 'pengantar_pulau')->get()->each(function ($pengantar) use ($reservasi, $jenisLabel) {
+                Notifikasi::create([
+                    'user_id' => $pengantar->id,
+                    'reservasi_id' => $reservasi->id,
+                    'judul' => 'Bukti Transfer Diunggah Ulang',
+                    'pesan' => "{$reservasi->wisatawan->name} mengunggah ulang bukti transfer untuk reservasi {$jenisLabel}, mohon diverifikasi ulang.",
+                    'tipe' => 'reservasi_baru',
+                ]);
+            });
+        });
+
+        return response()->json(['message' => 'Bukti transfer berhasil diunggah ulang, menunggu verifikasi.', 'data' => $reservasi->fresh()]);
     }
 
     // PATCH /api/reservasi/{reservasi}/verifikasi — khusus pengantar_pulau
@@ -272,10 +325,11 @@ class ReservasiController extends Controller
 
             Notifikasi::create([
                 'user_id' => $reservasi->user_id,
+                'reservasi_id' => $reservasi->id,
                 'judul' => $request->status === 'valid' ? 'Reservasi Anda Valid' : 'Reservasi Anda Ditolak',
                 'pesan' => $request->status === 'valid'
                     ? 'Bukti transfer Anda telah diverifikasi. Sampai jumpa di hari kunjungan!'
-                    : 'Bukti transfer Anda ditolak. Alasan: '.$request->catatan_penolakan,
+                    : 'Bukti transfer Anda ditolak. Alasan: '.$request->catatan_penolakan.' Ketuk notifikasi ini untuk unggah ulang bukti transfer.',
                 'tipe' => $request->status === 'valid' ? 'verifikasi_valid' : 'verifikasi_ditolak',
             ]);
 
@@ -297,6 +351,7 @@ class ReservasiController extends Controller
 
                     Notifikasi::create([
                         'user_id' => $pengelola->id,
+                        'reservasi_id' => $reservasi->id,
                         'judul' => $reservasi->jenis === 'menginap' ? 'Reservasi Menginap Baru' : 'Kunjungan One Day Trip Baru',
                         'pesan' => $pesan,
                         'tipe' => $reservasi->jenis === 'menginap' ? 'reservasi_menginap_baru' : 'reservasi_one_day_baru',
@@ -383,6 +438,7 @@ class ReservasiController extends Controller
 
             Notifikasi::create([
                 'user_id' => $reservasi->user_id,
+                'reservasi_id' => $reservasi->id,
                 'judul' => $request->boolean('disetujui') ? 'Pembatalan Disetujui' : 'Pengajuan Pembatalan Ditolak',
                 'pesan' => $request->boolean('disetujui')
                     ? 'Pengajuan pembatalan Anda telah disetujui.'
