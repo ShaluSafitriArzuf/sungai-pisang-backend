@@ -46,13 +46,23 @@ class GoogleAuthController extends Controller
             // (dibuat manual, sudah punya password asli) kebetulan login lewat Google karena
             // emailnya sama, google_id-nya SENGAJA tidak diisi — supaya menu "Ganti Password"
             // di frontend tetap muncul buat dia (lihat catatan di Profil.jsx sisi frontend).
+            //
+            // email_verified_at langsung diisi now() — Google sendiri sudah memverifikasi
+            // pemilik email ini sebelum mengizinkan dia login, jadi tidak perlu verifikasi
+            // email tambahan lagi dari sistem kita (beda dengan registrasi manual).
             $user = User::create([
                 'name' => $googleUser->getName() ?: $googleUser->getNickname() ?: 'Pengguna Google',
                 'email' => $googleUser->getEmail(),
                 'password' => Hash::make(Str::random(40)),
                 'role' => 'wisatawan',
                 'google_id' => $googleUser->getId(),
+                'email_verified_at' => now(),
             ]);
+        } elseif (! $user->email_verified_at) {
+            // Akun lama hasil registrasi manual yang belum sempat verifikasi email, tapi
+            // ternyata berhasil login Google pakai email yang sama — itu sekaligus jadi bukti
+            // sah dia memang pemilik email ini, jadi langsung ditandai terverifikasi juga.
+            $user->forceFill(['email_verified_at' => now()])->save();
         }
 
         $token = $user->createToken('auth_token')->plainTextToken;

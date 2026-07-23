@@ -65,12 +65,17 @@ class DatabaseSeeder extends Seeder
         }
 
         // ── 1 Akun Wisatawan ─────────────────────────
+        // email_verified_at diisi langsung — akun seeder/demo ini dibuat manual oleh kita
+        // sendiri (bukan lewat form Registrasi publik), jadi tidak perlu ikut alur verifikasi
+        // email. Kalau tidak diisi, akun ini malah tidak akan bisa dipakai login sama sekali
+        // sejak fitur verifikasi email aktif.
         User::create([
             'name' => 'Wisatawan Contoh',
             'email' => 'wisatawan@test.com',
             'password' => Hash::make('password'),
             'role' => 'wisatawan',
             'no_hp' => '081234567890',
+            'email_verified_at' => now(),
         ]);
 
         // ── 1 Akun Pengantar Pulau ───────────────────
@@ -82,6 +87,7 @@ class DatabaseSeeder extends Seeder
             'no_hp' => '081234567891',
             'latitude' => -1.11664604555515,
             'longitude' => 100.3868464247046,
+            'email_verified_at' => now(),
         ]);
 
         // ── 5 Akun Pengelola Pulau (1 akun = 1 pulau, sesuai syarat dosen) ──
@@ -94,6 +100,7 @@ class DatabaseSeeder extends Seeder
                 'role' => 'pengelola_pulau',
                 'no_hp' => '08123456780'.$i,
                 'pulau_id' => $pulau->id,
+                'email_verified_at' => now(),
             ]);
 
             // Contoh 5 akomodasi (variasi tipe & harga) + wahana per pulau

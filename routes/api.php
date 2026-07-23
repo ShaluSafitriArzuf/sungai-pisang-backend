@@ -24,6 +24,11 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::post('/lupa-password', [AuthController::class, 'lupaPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 
+// Link ini yang diklik dari email verifikasi — wajib dikasih nama 'verifikasi.email' persis
+// karena dipakai AuthController::buatLinkVerifikasi() buat generate signed URL-nya.
+Route::get('/verifikasi-email/{id}/{hash}', [AuthController::class, 'verifikasiEmail'])->name('verifikasi.email');
+Route::post('/verifikasi-email/kirim-ulang', [AuthController::class, 'kirimUlangVerifikasi']);
+
 // Redirect biasa (bukan dipanggil lewat axios/fetch) — makanya boleh di luar grup auth:sanctum.
 Route::get('/auth/google/redirect', [GoogleAuthController::class, 'redirect']);
 Route::get('/auth/google/callback', [GoogleAuthController::class, 'callback']);

@@ -4,15 +4,39 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Notifications\VerifikasiEmail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
 {
+    // Bikin link verifikasi email yang "ditandatangani" (signed) — link ini otomatis kadaluarsa
+    // sendiri (60 menit) dan tidak bisa diutak-atik (ganti id/hash-nya) tanpa ketahuan tidak
+    // valid, tanpa perlu tabel token terpisah kayak reset password.
+    private function buatLinkVerifikasi(User $user): string
+    {
+        return URL::temporarySignedRoute(
+            'verifikasi.email',
+            now()->addMinutes(60),
+            ['id' => $user->id, 'hash' => sha1($user->email)]
+        );
+    }
+
     // Registrasi HANYA untuk wisatawan. Akun pengantar_pulau & pengelola_pulau
     // dibuat manual oleh admin/seeder (5 akun pengelola_pulau tetap, 1 akun pengantar_pulau).
+    //
+    // PENTING (kenapa ada verifikasi email): tanpa ini, siapa pun bisa daftar pakai email
+    // SEMBARANGAN — email orang lain, atau email yang bahkan tidak ada — dan langsung dapat
+    // akun aktif tanpa bukti dia benar-benar pemilik email itu. Ini rawan disalahgunakan buat
+    // spam reservasi pakai identitas palsu. Jadi sekarang akun baru TIDAK langsung aktif/login
+    // otomatis — wajib klik link verifikasi yang dikirim ke email itu dulu.
+    //
+    // Login lewat Google TIDAK butuh langkah ini — Google sendiri sudah memverifikasi pemilik
+    // email itu sebelum mengizinkan login (lihat GoogleAuthController), jadi kita percaya begitu
+    // saja (email_verified_at diisi otomatis di sana).
     public function register(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -34,12 +58,12 @@ class AuthController extends Controller
             'role' => 'wisatawan',
         ]);
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $user->notify(new VerifikasiEmail($this->buatLinkVerifikasi($user)));
 
+        // Sengaja TIDAK langsung mengeluarkan token/auto-login — akun ini belum aktif sampai
+        // link di email-nya diklik.
         return response()->json([
-            'message' => 'Registrasi berhasil.',
-            'user' => $user,
-            'token' => $token,
+            'message' => 'Registrasi berhasil! Kami sudah mengirim link verifikasi ke email kamu — klik dulu link itu sebelum bisa login.',
         ], 201);
     }
 
@@ -60,12 +84,68 @@ class AuthController extends Controller
             return response()->json(['message' => 'Email atau password salah.'], 401);
         }
 
+        // Akun Google (google_id terisi) selalu dianggap terverifikasi (lihat GoogleAuthController).
+        // Ini cuma menyaring akun hasil REGISTRASI MANUAL yang belum klik link verifikasinya.
+        if (! $user->google_id && ! $user->email_verified_at) {
+            return response()->json([
+                'message' => 'Email kamu belum diverifikasi. Cek email untuk link verifikasi, atau minta link baru di bawah ini.',
+                'perlu_verifikasi_email' => true,
+            ], 403);
+        }
+
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
             'message' => 'Login berhasil.',
             'user' => $user->load('pulau'),
             'token' => $token,
+        ]);
+    }
+
+    // GET /api/verifikasi-email/{id}/{hash} — link yang diklik dari email. Signed URL, jadi
+    // Laravel otomatis menolak kalau linknya kadaluarsa atau parameternya diubah-ubah.
+    public function verifikasiEmail(Request $request, $id, $hash)
+    {
+        $frontendUrl = rtrim(env('FRONTEND_URL', 'http://localhost:5173'), '/');
+
+        if (! $request->hasValidSignature()) {
+            return redirect("{$frontendUrl}/login?verifikasi=kadaluarsa");
+        }
+
+        $user = User::find($id);
+
+        if (! $user || ! hash_equals(sha1($user->email), (string) $hash)) {
+            return redirect("{$frontendUrl}/login?verifikasi=gagal");
+        }
+
+        if (! $user->email_verified_at) {
+            $user->forceFill(['email_verified_at' => now()])->save();
+        }
+
+        return redirect("{$frontendUrl}/login?verifikasi=berhasil");
+    }
+
+    // POST /api/verifikasi-email/kirim-ulang — dipakai kalau link di email sudah kadaluarsa,
+    // atau emailnya tidak sampai. Balas pesan yang sama persis baik email itu terdaftar atau
+    // tidak (sama seperti lupaPassword), supaya tidak bisa dipakai menebak-nebak email terdaftar.
+    public function kirimUlangVerifikasi(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = User::where('email', $request->email)->first();
+
+        if ($user && ! $user->google_id && ! $user->email_verified_at) {
+            $user->notify(new VerifikasiEmail($this->buatLinkVerifikasi($user)));
+        }
+
+        return response()->json([
+            'message' => 'Kalau email tersebut terdaftar dan belum diverifikasi, link verifikasi baru sudah dikirim.',
         ]);
     }
 
