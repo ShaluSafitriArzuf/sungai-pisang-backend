@@ -63,9 +63,15 @@ return [
     | will be used by the PHP date and date-time functions. The timezone
     | is set to "UTC" by default as it is suitable for most use cases.
     |
+    | Diubah ke Asia/Jakarta (WIB) karena seluruh aturan tanggal pada sistem ini mengikuti
+    | waktu setempat: tanggal kunjungan, batas H-2 pengajuan pembatalan, penandaan reservasi
+    | selesai, dan tanggal manifest keberangkatan. Dengan UTC, sistem tertinggal 7 jam dari
+    | waktu setempat sehingga tanggal yang sudah lewat masih dianggap berlaku sampai pukul
+    | 07.00 WIB keesokan harinya.
+    |
     */
 
-    'timezone' => 'UTC',
+    'timezone' => 'Asia/Jakarta',
 
     /*
     |--------------------------------------------------------------------------

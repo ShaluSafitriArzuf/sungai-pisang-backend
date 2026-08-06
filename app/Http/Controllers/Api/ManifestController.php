@@ -30,6 +30,11 @@ class ManifestController extends Controller
         return response()->json([
             'tanggal' => $tanggal,
             'jumlah_wisatawan' => $reservasi->sum('jumlah_orang'),
+            // Jumlah unit akomodasi yang harus disiapkan pada tanggal ini. Satu reservasi
+            // dapat memesan lebih dari satu unit, sehingga tidak cukup menghitung jumlah
+            // baris reservasi. Reservasi One Day Trip dan "Bawa Tenda Sendiri" tidak
+            // memakai unit akomodasi sehingga tidak ikut dijumlahkan.
+            'jumlah_unit_akomodasi' => $reservasi->whereNotNull('akomodasi_id')->sum('jumlah_unit_dipesan'),
             'reservasi' => $reservasi,
         ]);
     }

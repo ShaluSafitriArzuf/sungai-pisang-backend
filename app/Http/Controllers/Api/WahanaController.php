@@ -34,16 +34,24 @@ class WahanaController extends Controller
             'nama' => 'required|string|max:255',
             'deskripsi' => 'nullable|string',
             'berbayar_lokasi' => 'sometimes|boolean',
+            'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
+        $fotoUrl = null;
+        if ($request->hasFile('foto')) {
+            $path = $request->file('foto')->store('wahana', 'public');
+            $fotoUrl = asset('storage/'.$path);
+        }
+
         $wahana = WahanaKegiatan::create([
             'pulau_id' => $user->pulau_id,
             'nama' => $request->nama,
             'deskripsi' => $request->deskripsi,
+            'foto' => $fotoUrl,
             'berbayar_lokasi' => $request->boolean('berbayar_lokasi'),
             'aktif' => true,
         ]);
@@ -64,13 +72,23 @@ class WahanaController extends Controller
             'deskripsi' => 'nullable|string',
             'aktif' => 'sometimes|boolean',
             'berbayar_lokasi' => 'sometimes|boolean',
+            'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $wahana->update($validator->validated());
+        $data = $validator->validated();
+
+        if ($request->hasFile('foto')) {
+            $path = $request->file('foto')->store('wahana', 'public');
+            $data['foto'] = asset('storage/'.$path);
+        } else {
+            unset($data['foto']);
+        }
+
+        $wahana->update($data);
 
         return response()->json(['message' => 'Wahana berhasil diperbarui.', 'data' => $wahana]);
     }

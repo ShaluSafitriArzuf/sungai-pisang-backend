@@ -19,7 +19,9 @@ class Pulau extends Model
         'badge',
         'latitude',
         'longitude',
-        'harga_tiket_masuk',
+        'harga_tiket_masuk_one_day',
+        'harga_tiket_masuk_menginap',
+        'harga_penyeberangan',
         'jam_operasional_genset',
         'regulasi',
         'fasilitas',
@@ -66,5 +68,14 @@ class Pulau extends Model
     public function ratingRataRata(): float
     {
         return round($this->ulasan()->avg('rating') ?? 0, 1);
+    }
+
+    // Tarif tiket masuk per orang sesuai jenis kunjungan. Dipakai bersama oleh
+    // ReservasiController supaya aturan harga cuma ditulis di satu tempat.
+    public function tarifTiketMasuk(string $jenis): float
+    {
+        return (float) ($jenis === 'menginap'
+            ? $this->harga_tiket_masuk_menginap
+            : $this->harga_tiket_masuk_one_day);
     }
 }

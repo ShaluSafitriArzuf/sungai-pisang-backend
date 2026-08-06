@@ -8,7 +8,7 @@ class WahanaKegiatan extends Model
 {
     protected $table = 'wahana_kegiatan';
 
-    protected $fillable = ['pulau_id', 'nama', 'deskripsi', 'aktif', 'berbayar_lokasi'];
+    protected $fillable = ['pulau_id', 'nama', 'deskripsi', 'foto', 'aktif', 'berbayar_lokasi'];
 
     protected function casts(): array
     {

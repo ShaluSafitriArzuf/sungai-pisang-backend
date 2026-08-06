@@ -37,6 +37,13 @@ class ReservasiController extends Controller
     // Begitu selesai, wisatawan dikirim notifikasi ajakan kasih ulasan (syarat ulasan: status selesai).
     private function tandaiReservasiLewatJadwalSelesai(): void
     {
+        // Pengajuan pembatalan yang sudah lewat batas H-2 tapi belum sempat ditanggapi
+        // Pengantar Pulau otomatis DITOLAK, supaya reservasi tidak menggantung di status
+        // 'pengajuan_batal' sampai hari keberangkatan. Aturannya sama persis dengan syarat
+        // pengajuan di Reservasi::bisaAjukanBatal() — begitu sisa hari ke tanggal kunjungan
+        // kurang dari 2, pengajuan dianggap kedaluwarsa dan reservasi kembali VALID.
+        $this->tolakOtomatisPengajuanBatalKedaluwarsa();
+
         Reservasi::where('status', 'valid')
             ->where(function ($q) {
                 $q->where(function ($q2) {
@@ -56,6 +63,33 @@ class ReservasiController extends Controller
                     'judul' => 'Perjalanan Selesai',
                     'pesan' => "Kunjunganmu ke {$r->pulau->nama} sudah selesai. Yuk beri ulasan pengalamanmu!",
                     'tipe' => 'reservasi_selesai',
+                ]);
+            });
+    }
+
+    // Pengajuan pembatalan kedaluwarsa (sudah masuk H-2 atau lewat) otomatis ditolak sistem.
+    // batasTanggal = tanggal_kunjungan yang jaraknya tinggal < 2 hari dari hari ini, yaitu
+    // semua reservasi dengan tanggal_kunjungan <= hari ini + 1 hari.
+    private function tolakOtomatisPengajuanBatalKedaluwarsa(): void
+    {
+        $batasTanggal = now()->addDay()->toDateString();
+
+        Reservasi::where('status', 'pengajuan_batal')
+            ->whereDate('tanggal_kunjungan', '<=', $batasTanggal)
+            ->with('pulau')
+            ->get()
+            ->each(function ($r) {
+                $r->update([
+                    'status' => 'valid',
+                    'status_pengembalian_dana' => null,
+                ]);
+
+                Notifikasi::create([
+                    'user_id' => $r->user_id,
+                    'reservasi_id' => $r->id,
+                    'judul' => 'Pengajuan Pembatalan Kedaluwarsa',
+                    'pesan' => "Pengajuan pembatalan untuk kunjungan ke {$r->pulau->nama} otomatis ditolak karena sudah melewati batas H-2 sebelum tanggal kunjungan. Reservasi Anda tetap berjalan sesuai jadwal.",
+                    'tipe' => 'pembatalan_ditolak',
                 ]);
             });
     }
@@ -149,8 +183,14 @@ class ReservasiController extends Controller
             'pulau_id' => 'required|exists:pulau,id',
             'jenis' => 'required|in:one_day_trip,menginap',
             'akomodasi_id' => 'nullable|exists:akomodasi,id',
+            'jumlah_unit_dipesan' => 'nullable|integer|min:1|max:20',
             'bawa_tenda_sendiri' => 'sometimes|boolean',
-            'tanggal_kunjungan' => 'required|date|after_or_equal:today',
+            // Aturan bisnis: reservasi paling cepat untuk BESOK (H-1), tidak bisa untuk hari
+            // yang sama. Pengantar Pulau memerlukan waktu untuk memverifikasi bukti transfer dan
+            // menyusun manifest keberangkatan. Tanpa jeda ini, reservasi yang dibuat siang atau
+            // malam hari berisiko baru diverifikasi setelah jadwal keberangkatan terlewat —
+            // terutama untuk One Day Trip yang berangkat dan pulang pada hari yang sama.
+            'tanggal_kunjungan' => 'required|date|after:today',
             'tanggal_selesai' => 'required_if:jenis,menginap|nullable|date|after:tanggal_kunjungan',
             'jumlah_orang' => 'required|integer|min:1',
             'bukti_transfer' => 'required|string',
@@ -162,6 +202,13 @@ class ReservasiController extends Controller
 
         $bawaTendaSendiri = $request->boolean('bawa_tenda_sendiri');
 
+        // Satu reservasi bisa memesan beberapa unit sekaligus, misalnya rombongan 10 orang
+        // memesan 3 unit cottage berkapasitas 4 orang. Untuk One Day Trip maupun "Bawa Tenda
+        // Sendiri" nilainya selalu 1 karena tidak ada unit akomodasi yang dipesan.
+        $jumlahUnit = ($request->jenis === 'menginap' && ! $bawaTendaSendiri)
+            ? max(1, (int) $request->input('jumlah_unit_dipesan', 1))
+            : 1;
+
         // Kalau menginap: wajib pilih salah satu — akomodasi berbayar milik pengelola, ATAU
         // centang bawa tenda sendiri (gratis, tidak masuk hitungan sisa unit akomodasi manapun).
         if ($request->jenis === 'menginap' && ! $bawaTendaSendiri && ! $request->akomodasi_id) {
@@ -172,12 +219,10 @@ class ReservasiController extends Controller
 
         $pulau = Pulau::findOrFail($request->pulau_id);
 
-        // Tarif penyeberangan adalah biaya global (bukan per-pulau), diatur di config/services.php
-        // lihat README bagian konfigurasi tambahan.
-        $tarifPenyeberangan = (float) config('services.penyeberangan.tarif_per_orang', 50000);
-
-        $biayaPenyeberangan = $tarifPenyeberangan * $request->jumlah_orang;
-        $biayaTiketMasuk = (float) $pulau->harga_tiket_masuk * $request->jumlah_orang;
+        // Tarif penyeberangan dan tiket masuk diambil per pulau (bukan tarif global lagi).
+        // Tiket masuk dibedakan antara One Day Trip dan Menginap lewat Pulau::tarifTiketMasuk().
+        $biayaPenyeberangan = (float) $pulau->harga_penyeberangan * $request->jumlah_orang;
+        $biayaTiketMasuk = $pulau->tarifTiketMasuk($request->jenis) * $request->jumlah_orang;
         $biayaAkomodasi = 0;
         $malamList = [];
 
@@ -186,22 +231,26 @@ class ReservasiController extends Controller
         }
 
         try {
-            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $biayaTiketMasuk, $malamList, $bawaTendaSendiri, &$biayaAkomodasi) {
+            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $biayaTiketMasuk, $malamList, $bawaTendaSendiri, $jumlahUnit, &$biayaAkomodasi) {
                 if ($request->jenis === 'menginap' && ! $bawaTendaSendiri) {
                     // Kunci baris akomodasi ini supaya pengecekan sisa unit + insert reservasi
                     // berjalan atomik (2 request bersamaan tidak bisa lolos berdua di unit terakhir).
                     $akomodasi = Akomodasi::where('id', $request->akomodasi_id)->lockForUpdate()->firstOrFail();
 
-                    // Cek sisa unit di SETIAP malam yang dipesan — kalau salah satu malam penuh,
-                    // seluruh transaksi dibatalkan (tidak ada yang perlu di-rollback manual karena
-                    // belum ada yang diubah di database sampai titik ini).
+                    // Cek sisa unit di SETIAP malam yang dipesan — kalau salah satu malam tidak
+                    // cukup untuk jumlah unit yang diminta, seluruh transaksi dibatalkan (tidak ada
+                    // yang perlu di-rollback manual karena belum ada yang diubah sampai titik ini).
                     foreach ($malamList as $tanggalMalam) {
-                        if ($akomodasi->sisaUnitPadaTanggal($tanggalMalam) < 1) {
-                            throw new \RuntimeException("Unit akomodasi \"{$akomodasi->nama}\" sudah penuh untuk tanggal {$tanggalMalam}.");
+                        $sisa = $akomodasi->sisaUnitPadaTanggal($tanggalMalam);
+                        if ($sisa < $jumlahUnit) {
+                            throw new \RuntimeException(
+                                "Unit akomodasi \"{$akomodasi->nama}\" hanya tersisa {$sisa} unit pada tanggal {$tanggalMalam}, "
+                                ."sedangkan Anda memesan {$jumlahUnit} unit."
+                            );
                         }
                     }
 
-                    $biayaAkomodasi = (float) $akomodasi->harga_per_malam * count($malamList);
+                    $biayaAkomodasi = (float) $akomodasi->harga_per_malam * count($malamList) * $jumlahUnit;
                 }
                 // Bawa tenda sendiri: tidak ada akomodasi yang dikunci/dicek, biaya akomodasi tetap 0.
 
@@ -212,6 +261,7 @@ class ReservasiController extends Controller
                     'pulau_id' => $pulau->id,
                     'jenis' => $request->jenis,
                     'akomodasi_id' => ($request->jenis === 'menginap' && ! $bawaTendaSendiri) ? $request->akomodasi_id : null,
+                    'jumlah_unit_dipesan' => $jumlahUnit,
                     'bawa_tenda_sendiri' => $request->jenis === 'menginap' ? $bawaTendaSendiri : false,
                     'tanggal_kunjungan' => $request->tanggal_kunjungan,
                     'tanggal_selesai' => $request->jenis === 'menginap' ? $request->tanggal_selesai : null,

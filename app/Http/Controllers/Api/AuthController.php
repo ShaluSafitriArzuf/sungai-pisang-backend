@@ -176,9 +176,31 @@ class AuthController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $user->update($validator->validated());
+        // Kalau email diganti, jangan langsung dianggap terverifikasi begitu saja — belum ada
+        // bukti pengguna benar-benar pemilik alamat email BARU itu. Reset status verifikasi
+        // dan kirim ulang link verifikasi ke email baru (pakai mekanisme yang sama seperti
+        // registrasi). Akun Google dikecualikan karena verifikasinya ditangani Google, bukan
+        // lewat link email kita, dan email Google umumnya tidak diedit manual dari sini.
+        $emailBerubah = $request->email !== $user->email;
 
-        return response()->json(['message' => 'Profil berhasil diperbarui.', 'user' => $user->fresh()->load('pulau')]);
+        $user->fill($validator->validated());
+
+        if ($emailBerubah && ! $user->google_id) {
+            $user->email_verified_at = null;
+        }
+
+        $user->save();
+
+        if ($emailBerubah && ! $user->google_id) {
+            $user->notify(new VerifikasiEmail($this->buatLinkVerifikasi($user)));
+        }
+
+        return response()->json([
+            'message' => $emailBerubah && ! $user->google_id
+                ? 'Profil berhasil diperbarui. Email baru kamu perlu diverifikasi lagi — cek email untuk link verifikasi.'
+                : 'Profil berhasil diperbarui.',
+            'user' => $user->fresh()->load('pulau'),
+        ]);
     }
 
     // PUT /api/user/password — ganti password, wajib verifikasi password lama dulu

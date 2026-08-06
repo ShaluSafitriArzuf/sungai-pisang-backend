@@ -8,11 +8,14 @@ class Akomodasi extends Model
 {
     protected $table = 'akomodasi';
 
-    protected $fillable = ['pulau_id', 'nama', 'tipe', 'harga_per_malam', 'jumlah_unit', 'foto', 'deskripsi', 'aktif'];
+    protected $fillable = ['pulau_id', 'nama', 'tipe', 'harga_per_malam', 'jumlah_unit', 'kapasitas', 'foto', 'deskripsi', 'fasilitas', 'aktif'];
 
     protected function casts(): array
     {
-        return ['aktif' => 'boolean'];
+        return [
+            'aktif' => 'boolean',
+            'fasilitas' => 'array',
+        ];
     }
 
     public function pulau()
@@ -35,13 +38,16 @@ class Akomodasi extends Model
     // Berapa unit yang sedang dipakai reservasi aktif (menunggu_verifikasi/valid) pada 1 tanggal malam tertentu.
     // "Aktif" artinya reservasi itu masih menghitung sebagai terpakai; begitu ditolak/dibatalkan/lewat
     // tanggal check-out, reservasi itu otomatis tidak terhitung lagi (tidak perlu proses "kembalikan kuota").
+    //
+    // PENTING: dijumlahkan dari kolom jumlah_unit_dipesan, BUKAN dihitung per baris reservasi,
+    // karena satu reservasi bisa memesan lebih dari satu unit sekaligus (rombongan besar).
     public function unitTerpakaiPadaTanggal(string $tanggal): int
     {
-        return $this->reservasi()
+        return (int) $this->reservasi()
             ->whereIn('status', ['menunggu_verifikasi', 'valid'])
             ->where('tanggal_kunjungan', '<=', $tanggal)
             ->where('tanggal_selesai', '>', $tanggal)
-            ->count();
+            ->sum('jumlah_unit_dipesan');
     }
 
     // Sisa unit tersedia pada 1 tanggal malam tertentu.

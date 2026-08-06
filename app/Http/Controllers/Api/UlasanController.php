@@ -57,4 +57,20 @@ class UlasanController extends Controller
 
         return response()->json(['message' => 'Ulasan berhasil dikirim.', 'data' => $ulasan], 201);
     }
+
+    // Khusus pengelola_pulau: hapus ulasan yang masuk ke pulau miliknya sendiri (moderasi
+    // dasar — mis. ulasan spam/tidak pantas). Wisatawan penulis aslinya tidak diberi tahu
+    // otomatis; ini murni tindakan moderasi oleh pengelola.
+    public function destroy(Request $request, Ulasan $ulasan)
+    {
+        $user = $request->user();
+
+        if (! $user->isPengelolaPulau() || $user->pulau_id !== $ulasan->pulau_id) {
+            return response()->json(['message' => 'Anda tidak berhak menghapus ulasan ini.'], 403);
+        }
+
+        $ulasan->delete();
+
+        return response()->json(['message' => 'Ulasan berhasil dihapus.']);
+    }
 }

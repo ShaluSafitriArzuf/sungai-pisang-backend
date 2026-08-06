@@ -26,6 +26,23 @@ class AkomodasiController extends Controller
         return response()->json($akomodasi);
     }
 
+    // GET /akomodasi/kelola/semua — khusus Pengelola Pulau, tampilkan SEMUA akomodasi
+    // miliknya (aktif maupun nonaktif) untuk halaman Kelola Akomodasi. Beda dari index()
+    // di atas yang cuma menampilkan aktif=true (dipakai halaman publik Detail Pulau/Form
+    // Reservasi) — supaya akomodasi yang baru dinonaktifkan TIDAK hilang dari daftar kelola.
+    public function kelola(Request $request)
+    {
+        $user = $request->user();
+
+        if (! $user->isPengelolaPulau()) {
+            return response()->json(['message' => 'Hanya pengelola pulau yang bisa mengakses ini.'], 403);
+        }
+
+        $akomodasi = Akomodasi::where('pulau_id', $user->pulau_id)->with('fotoTambahan')->get();
+
+        return response()->json($akomodasi);
+    }
+
     // GET /api/akomodasi/{akomodasi}/ketersediaan?checkin=&checkout= — publik, dipakai
     // form reservasi supaya wisatawan bisa lihat sisa unit SEBELUM kirim reservasi.
     public function ketersediaan(Request $request, Akomodasi $akomodasi)
@@ -61,8 +78,11 @@ class AkomodasiController extends Controller
             'tipe' => 'required|in:cottage,gazebo,tenda',
             'harga_per_malam' => 'required|numeric|min:0',
             'jumlah_unit' => 'required|integer|min:1',
+            'kapasitas' => 'nullable|integer|min:1',
             'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
             'deskripsi' => 'nullable|string',
+            'fasilitas' => 'nullable|array',
+            'fasilitas.*' => 'string',
         ]);
 
         if ($validator->fails()) {
@@ -81,8 +101,10 @@ class AkomodasiController extends Controller
             'tipe' => $request->tipe,
             'harga_per_malam' => $request->harga_per_malam,
             'jumlah_unit' => $request->jumlah_unit,
+            'kapasitas' => $request->kapasitas,
             'foto' => $fotoUrl,
             'deskripsi' => $request->deskripsi,
+            'fasilitas' => $request->input('fasilitas', []),
             'aktif' => true,
         ]);
 
@@ -102,8 +124,11 @@ class AkomodasiController extends Controller
             'tipe' => 'sometimes|in:cottage,gazebo,tenda',
             'harga_per_malam' => 'sometimes|numeric|min:0',
             'jumlah_unit' => 'sometimes|integer|min:1',
+            'kapasitas' => 'nullable|integer|min:1',
             'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
             'deskripsi' => 'nullable|string',
+            'fasilitas' => 'nullable|array',
+            'fasilitas.*' => 'string',
             'aktif' => 'sometimes|boolean',
         ]);
 

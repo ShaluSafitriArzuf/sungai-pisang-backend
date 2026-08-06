@@ -95,11 +95,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/wahana/{wahana}', [WahanaController::class, 'update']);
         Route::delete('/wahana/{wahana}', [WahanaController::class, 'destroy']);
 
+        Route::get('/akomodasi/kelola/semua', [AkomodasiController::class, 'kelola']);
         Route::post('/akomodasi', [AkomodasiController::class, 'store']);
         Route::put('/akomodasi/{akomodasi}', [AkomodasiController::class, 'update']);
         Route::delete('/akomodasi/{akomodasi}', [AkomodasiController::class, 'destroy']);
         Route::post('/akomodasi/{akomodasi}/foto', [AkomodasiFotoController::class, 'store']);
         Route::delete('/akomodasi/{akomodasi}/foto/{fotoAkomodasi}', [AkomodasiFotoController::class, 'destroy']);
+
+        Route::delete('/ulasan/{ulasan}', [UlasanController::class, 'destroy']);
     });
 
     // ── Reservasi: index & show dipakai 3 role sekaligus (filter beda per role, lihat controller) ──

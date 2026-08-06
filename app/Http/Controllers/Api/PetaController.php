@@ -14,7 +14,8 @@ class PetaController extends Controller
     // Publik: semua pin untuk halaman Peta Interaktif (pulau + lokasi Pengantar Pulau)
     public function index()
     {
-        $pulau = Pulau::select('id', 'nama', 'foto_utama', 'luas', 'latitude', 'longitude', 'badge', 'harga_tiket_masuk')
+        $pulau = Pulau::select('id', 'nama', 'foto_utama', 'luas', 'latitude', 'longitude', 'badge',
+            'harga_tiket_masuk_one_day', 'harga_tiket_masuk_menginap', 'harga_penyeberangan')
             ->withCount('ulasan')
             ->get()
             ->map(function ($p) {

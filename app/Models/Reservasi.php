@@ -13,6 +13,7 @@ class Reservasi extends Model
         'pulau_id',
         'jenis',
         'akomodasi_id',
+        'jumlah_unit_dipesan',
         'bawa_tenda_sendiri',
         'tanggal_kunjungan',
         'tanggal_selesai',

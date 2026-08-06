@@ -21,10 +21,11 @@
             <tr>
                 <th>No</th>
                 <th>Nama Wisatawan</th>
+                <th>No. HP</th>
                 <th>Pulau Tujuan</th>
                 <th>Jenis</th>
                 <th>Akomodasi</th>
-                <th>Jumlah Orang</th>
+                <th>Jml Orang</th>
                 <th>Status</th>
             </tr>
         </thead>
@@ -33,20 +34,53 @@
                 <tr>
                     <td>{{ $i + 1 }}</td>
                     <td>{{ $r->wisatawan->name }}</td>
+                    <td>{{ $r->wisatawan->no_hp ?? '-' }}</td>
                     <td>{{ $r->pulau->nama }}</td>
                     <td>{{ $r->jenis === 'one_day_trip' ? 'One Day Trip' : 'Menginap' }}</td>
-                    <td>{{ $r->akomodasi->nama ?? '-' }}</td>
+                    <td>
+                        @if ($r->akomodasi)
+                            {{ $r->akomodasi->nama }}
+                            @if ($r->jumlah_unit_dipesan > 1)
+                                ({{ $r->jumlah_unit_dipesan }} unit)
+                            @endif
+                        @elseif ($r->bawa_tenda_sendiri)
+                            Bawa Tenda Sendiri
+                        @else
+                            -
+                        @endif
+                    </td>
                     <td>{{ $r->jumlah_orang }}</td>
-                    <td>{{ ucfirst($r->status) }}</td>
+                    <td>{{ ucfirst(str_replace('_', ' ', $r->status)) }}</td>
                 </tr>
             @empty
                 <tr>
-                    <td colspan="7" style="text-align:center;">Tidak ada kunjungan pada tanggal ini.</td>
+                    <td colspan="8" style="text-align:center;">Tidak ada kunjungan pada tanggal ini.</td>
                 </tr>
             @endforelse
         </tbody>
     </table>
 
-    <p style="margin-top: 20px;">Total wisatawan: <strong>{{ $reservasi->sum('jumlah_orang') }}</strong> orang</p>
+    <p style="margin-top: 20px;">
+        Total wisatawan: <strong>{{ $reservasi->sum('jumlah_orang') }}</strong> orang
+        &nbsp;|&nbsp;
+        Total rombongan: <strong>{{ $reservasi->count() }}</strong> reservasi
+        &nbsp;|&nbsp;
+        Unit akomodasi disiapkan:
+        <strong>{{ $reservasi->whereNotNull('akomodasi_id')->sum('jumlah_unit_dipesan') }}</strong> unit
+    </p>
+
+    <p style="margin-top: 28px; font-size: 11px; color: #555;">
+        Dokumen ini dicetak dari Sistem Informasi Reservasi Wisata Bahari Sungai Pisang pada
+        {{ \Carbon\Carbon::now()->translatedFormat('d F Y, H:i') }} WIB.
+    </p>
+
+    <table style="margin-top: 24px; border: none; width: 60%;">
+        <tr>
+            <td style="border: none; text-align: center;">
+                Pengantar Pulau,<br><br><br><br>
+                (........................................)
+            </td>
+        </tr>
+    </table>
 </body>
 </html>

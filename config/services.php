@@ -35,9 +35,10 @@ return [
         ],
     ],
 
-    'penyeberangan' => [
-        'tarif_per_orang' => env('TARIF_PENYEBERANGAN_PER_ORANG', 50000),
-    ],
+    // Catatan: tarif penyeberangan dulu diatur global di sini lewat
+    // 'penyeberangan.tarif_per_orang'. Sejak tarif kapal ternyata berbeda tiap pulau,
+    // nilainya dipindah ke kolom harga_penyeberangan pada tabel pulau dan bisa diubah
+    // sendiri oleh Pengelola Pulau lewat halaman Kelola Profil Pulau.
 
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
