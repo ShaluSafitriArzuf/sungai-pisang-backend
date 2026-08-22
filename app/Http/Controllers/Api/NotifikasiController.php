@@ -10,9 +10,16 @@ class NotifikasiController extends Controller
 {
     public function index(Request $request)
     {
+        // per_page dulunya dihardcode 20 -- sama seperti bug yang sudah dibetulkan di
+        // ReservasiController: halaman Notifikasi & badge jumlah belum dibaca (lihat
+        // useJumlahNotifBelumDibaca.js) cuma baca HALAMAN PERTAMA tanpa loop ke halaman
+        // berikutnya, jadi notifikasi lama "hilang" dari daftar begitu totalnya lewat 20 --
+        // dan parahnya, TIDAK ADA cara buka/tandai notifikasi lama itu sama sekali dari UI.
+        $perPage = min(500, max(1, (int) $request->input('per_page', 20)));
+
         $notifikasi = Notifikasi::where('user_id', $request->user()->id)
             ->latest()
-            ->paginate(20);
+            ->paginate($perPage);
 
         return response()->json($notifikasi);
     }

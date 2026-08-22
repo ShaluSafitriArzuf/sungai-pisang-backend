@@ -75,14 +75,15 @@ class AkomodasiController extends Controller
 
         $validator = Validator::make($request->all(), [
             'nama' => 'required|string|max:255',
-            'tipe' => 'required|in:cottage,gazebo,tenda',
+            'tipe' => 'required|in:cottage,gazebo,tenda,backpacker',
             'harga_per_malam' => 'required|numeric|min:0',
             'jumlah_unit' => 'required|integer|min:1',
-            'kapasitas' => 'nullable|integer|min:1',
+            'kapasitas' => 'nullable|string|max:50',
             'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
             'deskripsi' => 'nullable|string',
             'fasilitas' => 'nullable|array',
             'fasilitas.*' => 'string',
+            'tiket_termasuk' => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -105,6 +106,7 @@ class AkomodasiController extends Controller
             'foto' => $fotoUrl,
             'deskripsi' => $request->deskripsi,
             'fasilitas' => $request->input('fasilitas', []),
+            'tiket_termasuk' => $request->boolean('tiket_termasuk'),
             'aktif' => true,
         ]);
 
@@ -121,15 +123,16 @@ class AkomodasiController extends Controller
 
         $validator = Validator::make($request->all(), [
             'nama' => 'sometimes|string|max:255',
-            'tipe' => 'sometimes|in:cottage,gazebo,tenda',
+            'tipe' => 'sometimes|in:cottage,gazebo,tenda,backpacker',
             'harga_per_malam' => 'sometimes|numeric|min:0',
             'jumlah_unit' => 'sometimes|integer|min:1',
-            'kapasitas' => 'nullable|integer|min:1',
+            'kapasitas' => 'nullable|string|max:50',
             'foto' => 'nullable|file|mimes:jpeg,jpg,png,webp|max:10240',
             'deskripsi' => 'nullable|string',
             'fasilitas' => 'nullable|array',
             'fasilitas.*' => 'string',
             'aktif' => 'sometimes|boolean',
+            'tiket_termasuk' => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {

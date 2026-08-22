@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AkomodasiFotoController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\GaleriFotoController;
 use App\Http\Controllers\Api\GoogleAuthController;
+use App\Http\Controllers\Api\LaporanPemasukanController;
 use App\Http\Controllers\Api\ManifestController;
 use App\Http\Controllers\Api\NotifikasiController;
 use App\Http\Controllers\Api\PetaController;
@@ -82,6 +83,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/manifest', [ManifestController::class, 'index']);
         Route::post('/manifest/export', [ManifestController::class, 'export']);
         Route::post('/peta/lokasi-saya', [PetaController::class, 'updateLokasiSaya']);
+
+        // Laporan pemasukan Pengantar Pulau. Yang dilaporkan HANYA ongkos kapal, bukan
+        // seluruh uang yang masuk lewat transfer -- tiket masuk dan akomodasi adalah hak
+        // Pengelola Pulau yang hanya dititipkan lewat pembayaran yang sama.
+        Route::get('/pengantar/laporan-pemasukan', [LaporanPemasukanController::class, 'index']);
+        Route::get('/pengantar/laporan-pemasukan/export', [LaporanPemasukanController::class, 'export']);
     });
 
     // ── Pengelola Pulau (5 akun terpisah, 1 pulau per akun) ──

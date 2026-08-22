@@ -173,6 +173,21 @@ class ReservasiDemoSeeder extends Seeder
                         'is_read' => in_array($s['status'], ['selesai', 'dibatalkan']),
                     ]);
                 }
+
+                // Reservasi menunggu_verifikasi di dunia nyata otomatis memberi tahu akun
+                // Pengantar Pulau (lihat ReservasiController::store()) -- disamakan di sini
+                // supaya data demo juga senyata mungkin dan notifikasi Pengantar Pulau tidak
+                // kosong melompong pas demo/sidang.
+                if ($s['status'] === 'menunggu_verifikasi' && $pengantar) {
+                    $jenisLabel = $jenis === 'menginap' ? 'Menginap' : 'One Day Trip';
+                    Notifikasi::create([
+                        'user_id' => $pengantar->id,
+                        'reservasi_id' => $reservasi->id,
+                        'judul' => 'Reservasi Baru Menunggu Verifikasi',
+                        'pesan' => "{$wisatawan->name} mengajukan reservasi {$jenisLabel} ke {$pulau->nama} untuk tanggal {$tanggalKunjungan->format('d-m-Y')}.",
+                        'tipe' => 'reservasi_baru',
+                    ]);
+                }
             }
         }
 

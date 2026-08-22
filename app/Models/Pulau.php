@@ -23,6 +23,7 @@ class Pulau extends Model
         'harga_tiket_masuk_menginap',
         'harga_penyeberangan',
         'jam_operasional_genset',
+        'genset_24_jam',
         'regulasi',
         'fasilitas',
     ];
@@ -31,6 +32,7 @@ class Pulau extends Model
     {
         return [
             'fasilitas' => 'array',
+            'genset_24_jam' => 'boolean',
         ];
     }
 

@@ -8,14 +8,28 @@ class Akomodasi extends Model
 {
     protected $table = 'akomodasi';
 
-    protected $fillable = ['pulau_id', 'nama', 'tipe', 'harga_per_malam', 'jumlah_unit', 'kapasitas', 'foto', 'deskripsi', 'fasilitas', 'aktif'];
+    protected $fillable = ['pulau_id', 'nama', 'tipe', 'harga_per_malam', 'jumlah_unit', 'kapasitas', 'foto', 'deskripsi', 'fasilitas', 'aktif', 'tiket_termasuk'];
 
     protected function casts(): array
     {
         return [
             'aktif' => 'boolean',
             'fasilitas' => 'array',
+            'tiket_termasuk' => 'boolean',
         ];
+    }
+
+    // Kolom kapasitas disimpan bebas sebagai teks (mis. "4" atau rentang "4-6") supaya
+    // Pengelola Pulau bisa isi muatan yang fleksibel. Dipakai ReservasiController buat hitung
+    // berapa orang yang "tertanggung" 1 unit akomodasi ini kalau tiket_termasuk aktif — diambil
+    // angka TERBESAR yang ditemukan (rentang "4-6" -> 6), supaya rombongan sampai batas maksimal
+    // kapasitas tetap dianggap sudah termasuk tiket masuknya.
+    public function kapasitasAngkaMaksimal(): int
+    {
+        preg_match_all('/\d+/', (string) $this->kapasitas, $matches);
+        $angka = array_map('intval', $matches[0] ?? []);
+
+        return $angka ? max($angka) : 0;
     }
 
     public function pulau()

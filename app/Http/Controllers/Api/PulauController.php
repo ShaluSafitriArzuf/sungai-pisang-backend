@@ -53,6 +53,7 @@ class PulauController extends Controller
             'harga_tiket_masuk_menginap' => 'nullable|numeric|min:0',
             'harga_penyeberangan' => 'nullable|numeric|min:0',
             'jam_operasional_genset' => 'nullable|string|max:255',
+            'genset_24_jam' => 'sometimes|boolean',
             'regulasi' => 'nullable|string',
             'fasilitas' => 'nullable|array',
             'fasilitas.*' => 'string',
@@ -63,6 +64,11 @@ class PulauController extends Controller
         }
 
         $data = $validator->validated();
+        // Konsisten sama tiket_termasuk di akomodasi: kalau genset_24_jam dinyalain, jadwal
+        // manual di jam_operasional_genset ga relevan lagi -- dikosongin biar ga nyisa data lama.
+        if ($request->boolean('genset_24_jam')) {
+            $data['jam_operasional_genset'] = null;
+        }
 
         if ($request->hasFile('foto_utama')) {
             $path = $request->file('foto_utama')->store('pulau', 'public');

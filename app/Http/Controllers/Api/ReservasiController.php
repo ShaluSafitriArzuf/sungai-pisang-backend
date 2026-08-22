@@ -126,9 +126,18 @@ class ReservasiController extends Controller
             return response()->json(['message' => 'Role tidak dikenali.'], 403);
         }
 
+        // per_page dulunya dihardcode 20 -- masalahnya beberapa halaman (Statistik & Ulasan,
+        // Dashboard, Riwayat) cuma baca res.data.data dari HALAMAN PERTAMA saja tanpa loop ke
+        // halaman berikutnya, jadi begitu total reservasi lewat 20 data lama "hilang" dari
+        // tampilan (termasuk yang masih menunggu_verifikasi buat Pengantar Pulau -- bisa
+        // kelewat diverifikasi). Dibolehkan override lewat ?per_page= dengan batas atas 500
+        // supaya halaman-halaman itu bisa minta "semua data" tanpa perlu ubah ke infinite
+        // scroll sekarang, sambil tetap ada batas wajar biar tidak disalahgunakan.
+        $perPage = min(500, max(1, (int) $request->input('per_page', 20)));
+
         $reservasi = $query->with(['wisatawan', 'pulau', 'akomodasi'])
             ->orderByDesc('created_at')
-            ->paginate(20);
+            ->paginate($perPage);
 
         return response()->json($reservasi);
     }
@@ -146,7 +155,11 @@ class ReservasiController extends Controller
             return response()->json(['message' => 'Anda tidak berhak melihat reservasi ini.'], 403);
         }
 
-        $reservasi->load(['wisatawan', 'pulau', 'akomodasi', 'verifikator']);
+        // BUG: 'ulasan' sebelumnya tidak ikut dimuat. Akibatnya r.ulasan di frontend SELALU
+        // undefined, sehingga syarat "!r.ulasan" pada Detail Reservasi selalu benar dan tombol
+        // "Beri Ulasan" tidak pernah hilang — wisatawan bisa menekannya berulang kali meskipun
+        // reservasi itu sudah pernah diulas.
+        $reservasi->load(['wisatawan', 'pulau', 'akomodasi', 'verifikator', 'ulasan']);
         // Dikirim eksplisit supaya frontend tidak perlu duplikat aturan H-2 sendiri — cukup pakai
         // hasil dari sini, dijamin selalu sinkron dengan aturan yang dipakai backend saat submit.
         $reservasi->bisa_ajukan_batal = $reservasi->bisaAjukanBatal();
@@ -222,8 +235,9 @@ class ReservasiController extends Controller
         // Tarif penyeberangan dan tiket masuk diambil per pulau (bukan tarif global lagi).
         // Tiket masuk dibedakan antara One Day Trip dan Menginap lewat Pulau::tarifTiketMasuk().
         $biayaPenyeberangan = (float) $pulau->harga_penyeberangan * $request->jumlah_orang;
-        $biayaTiketMasuk = $pulau->tarifTiketMasuk($request->jenis) * $request->jumlah_orang;
+        $tarifTiketMasuk = $pulau->tarifTiketMasuk($request->jenis);
         $biayaAkomodasi = 0;
+        $biayaTiketMasuk = 0;
         $malamList = [];
 
         if ($request->jenis === 'menginap') {
@@ -231,7 +245,12 @@ class ReservasiController extends Controller
         }
 
         try {
-            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $biayaTiketMasuk, $malamList, $bawaTendaSendiri, $jumlahUnit, &$biayaAkomodasi) {
+            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $tarifTiketMasuk, $malamList, $bawaTendaSendiri, $jumlahUnit, &$biayaAkomodasi, &$biayaTiketMasuk) {
+                // Jumlah orang yang tiket masuknya TIDAK dihitung lagi karena sudah termasuk
+                // harga akomodasi (lihat akomodasi.tiket_termasuk) — default 0 untuk One Day
+                // Trip / Bawa Tenda Sendiri, karena keduanya tidak punya akomodasi berbayar.
+                $orangDitanggungTiket = 0;
+
                 if ($request->jenis === 'menginap' && ! $bawaTendaSendiri) {
                     // Kunci baris akomodasi ini supaya pengecekan sisa unit + insert reservasi
                     // berjalan atomik (2 request bersamaan tidak bisa lolos berdua di unit terakhir).
@@ -251,8 +270,20 @@ class ReservasiController extends Controller
                     }
 
                     $biayaAkomodasi = (float) $akomodasi->harga_per_malam * count($malamList) * $jumlahUnit;
+
+                    // Akomodasi yang harganya sudah all-in (termasuk tiket masuk) membebaskan
+                    // tiket masuk untuk wisatawan yang tertampung kapasitas unit yang dipesan.
+                    // Kalau rombongan melebihi kapasitas unit yang dipesan, kelebihan orangnya
+                    // tetap kena tiket masuk penuh seperti biasa.
+                    if ($akomodasi->tiket_termasuk) {
+                        $kapasitasPerUnit = $akomodasi->kapasitasAngkaMaksimal();
+                        $orangDitanggungTiket = min($request->jumlah_orang, $kapasitasPerUnit * $jumlahUnit);
+                    }
                 }
                 // Bawa tenda sendiri: tidak ada akomodasi yang dikunci/dicek, biaya akomodasi tetap 0.
+
+                $orangBayarTiket = max(0, $request->jumlah_orang - $orangDitanggungTiket);
+                $biayaTiketMasuk = $tarifTiketMasuk * $orangBayarTiket;
 
                 $total = $biayaPenyeberangan + $biayaTiketMasuk + $biayaAkomodasi;
 
@@ -445,6 +476,21 @@ class ReservasiController extends Controller
             'status_pengembalian_dana' => 'belum_diproses',
         ]);
 
+        // BUG: sebelumnya tidak ada Notifikasi::create() sama sekali di sini -- padahal SEMUA
+        // perubahan status lain (reservasi baru, verifikasi, hasil proses batal) selalu memberi
+        // tahu pihak terkait. Akibatnya Pengantar Pulau tidak tahu ada pengajuan pembatalan baru
+        // kecuali mengecek manual satu-satu, padahal dialah yang harus memprosesnya
+        // (lihat prosesPembatalan() di bawah).
+        User::where('role', 'pengantar_pulau')->get()->each(function ($pengantar) use ($reservasi) {
+            Notifikasi::create([
+                'user_id' => $pengantar->id,
+                'reservasi_id' => $reservasi->id,
+                'judul' => 'Pengajuan Pembatalan Baru',
+                'pesan' => "{$reservasi->wisatawan->name} mengajukan pembatalan reservasi ke {$reservasi->pulau->nama} untuk tanggal {$reservasi->tanggal_kunjungan->format('d-m-Y')}.",
+                'tipe' => 'pembatalan_diajukan',
+            ]);
+        });
+
         return response()->json(['message' => 'Pengajuan pembatalan berhasil dikirim.', 'data' => $reservasi]);
     }
 
@@ -495,6 +541,34 @@ class ReservasiController extends Controller
                     : 'Pengajuan pembatalan Anda ditolak, reservasi tetap berjalan sesuai jadwal.',
                 'tipe' => $request->boolean('disetujui') ? 'pembatalan_disetujui' : 'pembatalan_ditolak',
             ]);
+
+            // Pengelola Pulau WAJIB ikut diberi tahu kalau pembatalan disetujui. Alasannya:
+            // begitu status jadi 'dibatalkan', reservasi ini langsung keluar dari daftar
+            // Pengelola Pulau (index() hanya mengambil status valid & selesai), jadi barisnya
+            // hilang tanpa jejak. Tanpa notifikasi ini, pengelola yang sudah menyiapkan unit
+            // akomodasi untuk tamu tersebut tidak akan pernah tahu tamunya batal datang.
+            //
+            // Hanya dikirim saat DISETUJUI. Kalau pengajuan ditolak, reservasi kembali valid
+            // dan tidak ada yang berubah bagi pengelola, jadi tidak perlu diganggu.
+            if ($request->boolean('disetujui')) {
+                $reservasi->loadMissing('wisatawan');
+
+                $pengelola = User::where('role', 'pengelola_pulau')
+                    ->where('pulau_id', $reservasi->pulau_id)
+                    ->get();
+
+                foreach ($pengelola as $p) {
+                    Notifikasi::create([
+                        'user_id' => $p->id,
+                        'reservasi_id' => $reservasi->id,
+                        'judul' => 'Reservasi Dibatalkan',
+                        'pesan' => 'Reservasi atas nama '.$reservasi->wisatawan->name.' pada tanggal '
+                            .$reservasi->tanggal_kunjungan->format('d-m-Y')
+                            .' telah dibatalkan. Unit akomodasi yang sudah disiapkan dapat dilepas kembali.',
+                        'tipe' => 'reservasi_dibatalkan',
+                    ]);
+                }
+            }
         });
 
         return response()->json(['message' => 'Pengajuan pembatalan berhasil diproses.', 'data' => $reservasi->fresh()]);
