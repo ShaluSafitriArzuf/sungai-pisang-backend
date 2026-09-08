@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Akomodasi;
 use App\Models\Notifikasi;
+use App\Models\PesertaReservasi;
 use App\Models\Pulau;
 use App\Models\Reservasi;
 use App\Models\User;
@@ -43,6 +44,14 @@ class ReservasiController extends Controller
         // pengajuan di Reservasi::bisaAjukanBatal() — begitu sisa hari ke tanggal kunjungan
         // kurang dari 2, pengajuan dianggap kedaluwarsa dan reservasi kembali VALID.
         $this->tolakOtomatisPengajuanBatalKedaluwarsa();
+
+        // Reservasi yang tanggalnya sudah lewat tapi bukti transfernya belum sempat
+        // diverifikasi -- wisatawannya dikabari, tapi statusnya TIDAK diubah otomatis.
+        $this->kabariReservasiTerlewatBelumDiverifikasi();
+
+        // Pencegahan dari hulu: ingatkan Pengantar Pulau kalau masih ada yang belum
+        // diverifikasi padahal keberangkatannya besok.
+        $this->ingatkanPengantarVerifikasiBesok();
 
         Reservasi::where('status', 'valid')
             ->where(function ($q) {
@@ -92,6 +101,103 @@ class ReservasiController extends Controller
                     'tipe' => 'pembatalan_ditolak',
                 ]);
             });
+    }
+
+    // Reservasi yang masih 'menunggu_verifikasi' padahal tanggal kunjungannya sudah lewat.
+    //
+    // Statusnya SENGAJA tidak diubah otomatis. Uang wisatawan sudah masuk lewat transfer,
+    // jadi kalau sistem membatalkannya sendiri berarti sistem ikut memutuskan soal
+    // pengembalian dana tanpa ada manusia yang bertanggung jawab. Itu bertentangan dengan
+    // aturan lain di sistem ini: menolak reservasi wajib mengisi catatan penolakan, dan
+    // menyetujui pembatalan wajib memilih status pengembalian dana. Keputusannya tetap
+    // milik Pengantar Pulau lewat tombol Valid/Tolak yang sudah ada.
+    //
+    // Yang dikerjakan sistem cuma satu: memberi tahu wisatawan SEKALI, lengkap dengan nomor
+    // HP Pengantar Pulau, supaya dia tidak menunggu tanpa kabar dan tahu harus menghubungi
+    // siapa. Dicek dari notifikasi bertipe 'reservasi_terlewat' yang sudah pernah dibuat
+    // untuk reservasi tersebut, supaya tidak dikirim ulang tiap kali daftar dibuka.
+    private function kabariReservasiTerlewatBelumDiverifikasi(): void
+    {
+        $terlewat = Reservasi::where('status', 'menunggu_verifikasi')
+            ->whereDate('tanggal_kunjungan', '<', now()->toDateString())
+            ->with('pulau')
+            ->get();
+
+        if ($terlewat->isEmpty()) {
+            return;
+        }
+
+        $sudahDikabari = Notifikasi::where('tipe', 'reservasi_terlewat')
+            ->whereIn('reservasi_id', $terlewat->pluck('id'))
+            ->pluck('reservasi_id')
+            ->all();
+
+        // Nomor HP diambil dari akun Pengantar Pulau, bukan ditulis mati di sini, supaya
+        // kalau nomornya berganti cukup diubah lewat halaman Edit Profil.
+        $noHp = User::where('role', 'pengantar_pulau')->value('no_hp');
+
+        $ajakanHubungi = $noHp
+            ? "Silakan hubungi Pengantar Pulau di {$noHp} untuk menanyakan kelanjutan dan pengembalian dana."
+            : 'Silakan hubungi Pengantar Pulau untuk menanyakan kelanjutan dan pengembalian dana.';
+
+        foreach ($terlewat as $r) {
+            if (in_array($r->id, $sudahDikabari, true)) {
+                continue;
+            }
+
+            Notifikasi::create([
+                'user_id' => $r->user_id,
+                'reservasi_id' => $r->id,
+                'judul' => 'Reservasi Terlewat, Belum Diverifikasi',
+                'pesan' => "Tanggal kunjungan ke {$r->pulau->nama} sudah terlewat, tetapi bukti transfermu belum sempat diverifikasi. {$ajakanHubungi}",
+                'tipe' => 'reservasi_terlewat',
+            ]);
+        }
+    }
+
+    // Pengingat buat Pengantar Pulau: masih ada reservasi yang belum diverifikasi padahal
+    // keberangkatannya BESOK. Ini pencegahan dari hulu -- kalau verifikasi dikerjakan tepat
+    // waktu, kasus "terlewat belum diverifikasi" di atas tidak akan terjadi.
+    //
+    // Sengaja dikirim SATU notifikasi rangkuman per hari, bukan satu per reservasi, supaya
+    // lonceng notifikasi Pengantar Pulau tidak dibanjiri kalau reservasinya banyak.
+    private function ingatkanPengantarVerifikasiBesok(): void
+    {
+        $besok = now()->addDay()->toDateString();
+
+        $jumlah = Reservasi::where('status', 'menunggu_verifikasi')
+            ->whereDate('tanggal_kunjungan', $besok)
+            ->count();
+
+        if ($jumlah === 0) {
+            return;
+        }
+
+        $pengantar = User::where('role', 'pengantar_pulau')->first();
+
+        if (! $pengantar) {
+            return;
+        }
+
+        // Cukup sekali sehari. Kalau siangnya ada reservasi baru untuk besok, pengingatnya
+        // baru muncul lagi besok pagi -- itu tidak masalah, karena batas pemesanan paling
+        // lambat H-1 memang sudah dijaga aturan tersendiri saat reservasi dibuat.
+        $sudahDikirimHariIni = Notifikasi::where('user_id', $pengantar->id)
+            ->where('tipe', 'pengingat_verifikasi')
+            ->whereDate('created_at', now()->toDateString())
+            ->exists();
+
+        if ($sudahDikirimHariIni) {
+            return;
+        }
+
+        Notifikasi::create([
+            'user_id' => $pengantar->id,
+            'reservasi_id' => null,
+            'judul' => 'Pengingat: Verifikasi Keberangkatan Besok',
+            'pesan' => "Ada {$jumlah} reservasi untuk keberangkatan besok yang bukti transfernya belum diverifikasi. Mohon diperiksa hari ini supaya manifest keberangkatan dapat disusun tepat waktu.",
+            'tipe' => 'pengingat_verifikasi',
+        ]);
     }
 
     // GET /api/reservasi — daftar reservasi, difilter sesuai role yang login
@@ -159,10 +265,13 @@ class ReservasiController extends Controller
         // undefined, sehingga syarat "!r.ulasan" pada Detail Reservasi selalu benar dan tombol
         // "Beri Ulasan" tidak pernah hilang — wisatawan bisa menekannya berulang kali meskipun
         // reservasi itu sudah pernah diulas.
-        $reservasi->load(['wisatawan', 'pulau', 'akomodasi', 'verifikator', 'ulasan']);
+        $reservasi->load(['wisatawan', 'pulau', 'akomodasi', 'verifikator', 'ulasan', 'peserta']);
         // Dikirim eksplisit supaya frontend tidak perlu duplikat aturan H-2 sendiri — cukup pakai
         // hasil dari sini, dijamin selalu sinkron dengan aturan yang dipakai backend saat submit.
         $reservasi->bisa_ajukan_batal = $reservasi->bisaAjukanBatal();
+        // Dikirim juga supaya halaman detail bisa MENJELASKAN kenapa tombol pembatalan
+        // tidak tersedia, bukan sekadar menghilangkannya tanpa alasan.
+        $reservasi->sisa_hari_kunjungan = $reservasi->sisaHariKunjungan();
 
         return response()->json($reservasi);
     }
@@ -205,12 +314,42 @@ class ReservasiController extends Controller
             // terutama untuk One Day Trip yang berangkat dan pulang pada hari yang sama.
             'tanggal_kunjungan' => 'required|date|after:today',
             'tanggal_selesai' => 'required_if:jenis,menginap|nullable|date|after:tanggal_kunjungan',
-            'jumlah_orang' => 'required|integer|min:1',
+            // Batas atas disamakan dengan batas jumlah baris peserta di bawah, supaya
+            // rombongan besar ditolak dengan pesan yang jelas, bukan gagal diam-diam.
+            'jumlah_orang' => 'required|integer|min:1|max:50',
             'bukti_transfer' => 'required|string',
+            // Identitas setiap peserta wajib dikirim satu per satu. Jumlah barisnya harus
+            // sama persis dengan jumlah_orang -- diperiksa tepat setelah blok ini.
+            'peserta' => 'required|array|min:1|max:50',
+            'peserta.*.nama' => 'required|string|max:255',
+            'peserta.*.no_identitas' => 'nullable|string|max:32',
+            'peserta.*.jenis_kelamin' => 'required|in:L,P',
+            'peserta.*.usia' => 'required|integer|min:0|max:120',
+            'peserta.*.no_hp' => 'nullable|string|max:20',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $daftarPeserta = $request->input('peserta', []);
+
+        // Manifest penumpang hanya sahih kalau jumlah baris identitas sama dengan jumlah orang
+        // yang menyeberang. Kalau tidak sama, ada penumpang yang tidak tercatat identitasnya.
+        if (count($daftarPeserta) !== (int) $request->jumlah_orang) {
+            return response()->json([
+                'message' => 'Jumlah data peserta ('.count($daftarPeserta).' orang) tidak sama dengan jumlah wisatawan yang diisi ('.$request->jumlah_orang.' orang).',
+            ], 422);
+        }
+
+        // Nomor identitas diwajibkan bagi peserta berusia 17 tahun ke atas, karena pada usia itu
+        // KTP sudah wajib dimiliki. Anak di bawahnya boleh dikosongkan.
+        foreach ($daftarPeserta as $urutan => $orang) {
+            if ((int) ($orang['usia'] ?? 0) >= 17 && empty($orang['no_identitas'])) {
+                return response()->json([
+                    'message' => 'Nomor identitas peserta ke-'.($urutan + 1).' ('.($orang['nama'] ?? 'tanpa nama').') wajib diisi karena usianya 17 tahun ke atas.',
+                ], 422);
+            }
         }
 
         $bawaTendaSendiri = $request->boolean('bawa_tenda_sendiri');
@@ -245,7 +384,7 @@ class ReservasiController extends Controller
         }
 
         try {
-            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $tarifTiketMasuk, $malamList, $bawaTendaSendiri, $jumlahUnit, &$biayaAkomodasi, &$biayaTiketMasuk) {
+            $reservasi = DB::transaction(function () use ($request, $user, $pulau, $biayaPenyeberangan, $tarifTiketMasuk, $malamList, $bawaTendaSendiri, $jumlahUnit, $daftarPeserta, &$biayaAkomodasi, &$biayaTiketMasuk) {
                 // Jumlah orang yang tiket masuknya TIDAK dihitung lagi karena sudah termasuk
                 // harga akomodasi (lihat akomodasi.tiket_termasuk) — default 0 untuk One Day
                 // Trip / Bawa Tenda Sendiri, karena keduanya tidak punya akomodasi berbayar.
@@ -287,7 +426,7 @@ class ReservasiController extends Controller
 
                 $total = $biayaPenyeberangan + $biayaTiketMasuk + $biayaAkomodasi;
 
-                return Reservasi::create([
+                $reservasiBaru = Reservasi::create([
                     'user_id' => $user->id,
                     'pulau_id' => $pulau->id,
                     'jenis' => $request->jenis,
@@ -304,6 +443,28 @@ class ReservasiController extends Controller
                     'bukti_transfer' => $request->bukti_transfer,
                     'status' => 'menunggu_verifikasi',
                 ]);
+
+                // Kode pemesanan baru bisa dibentuk setelah reservasi punya nomor urut (id).
+                // Polanya SP-TTBBHH-NNNN, memakai tanggal kunjungan supaya kode itu sendiri
+                // sudah memberi tahu tanggal keberangkatannya.
+                $reservasiBaru->update([
+                    'kode_booking' => 'SP-'
+                        .\Carbon\Carbon::parse($request->tanggal_kunjungan)->format('ymd')
+                        .'-'.str_pad((string) $reservasiBaru->id, 4, '0', STR_PAD_LEFT),
+                ]);
+
+                foreach ($daftarPeserta as $orang) {
+                    PesertaReservasi::create([
+                        'reservasi_id' => $reservasiBaru->id,
+                        'nama' => $orang['nama'],
+                        'no_identitas' => $orang['no_identitas'] ?? null,
+                        'jenis_kelamin' => $orang['jenis_kelamin'],
+                        'usia' => $orang['usia'],
+                        'no_hp' => $orang['no_hp'] ?? null,
+                    ]);
+                }
+
+                return $reservasiBaru;
             });
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);

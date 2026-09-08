@@ -98,7 +98,22 @@
 </head>
 <body>
 
+    @php
+        // Logo ditanam sebagai data URI supaya tetap tampil walau DomPDF berjalan di hosting
+        // berbagi yang tidak bisa mengambil berkas lewat http. Kalau berkasnya tidak ada,
+        // kop tetap tampil tanpa logo.
+        $logoBerkas = public_path('logo/jelajah-bahari.png');
+        $logo = is_file($logoBerkas)
+            ? 'data:image/png;base64,'.base64_encode(file_get_contents($logoBerkas))
+            : null;
+    @endphp
+
     <div class="kop">
+        @if ($logo)
+            <div style="text-align:center; margin-bottom:6px;">
+                <img src="{{ $logo }}" alt="Jelajah Bahari" style="width:38px; height:38px;">
+            </div>
+        @endif
         <h1>MANIFEST KUNJUNGAN WISATA BAHARI SUNGAI PISANG</h1>
         <p class="sub">Tanggal Keberangkatan: <strong>{{ $tanggalTeks }}</strong></p>
     </div>
@@ -163,6 +178,68 @@
             @endforelse
         </tbody>
     </table>
+
+    @php
+        $totalPeserta = $reservasi->sum(fn ($r) => $r->peserta->count());
+    @endphp
+
+    <h2 style="font-size:11px;color:#14456b;margin:18px 0 6px 0;padding-bottom:3px;
+               border-bottom:1px solid #d7e3ee;letter-spacing:.4px;">
+        DAFTAR PENUMPANG &mdash; IDENTITAS PER ORANG
+    </h2>
+    <p style="font-size:9px;color:#5b6b7a;margin:0 0 7px 0;">
+        Daftar ini memuat identitas setiap orang yang menyeberang, bukan hanya pemesannya.
+        Tercatat {{ $totalPeserta }} dari {{ $totalOrang }} orang.
+    </p>
+
+    <table class="data">
+        <thead>
+            <tr>
+                <th style="width: 4%;"  class="c">No</th>
+                <th style="width: 22%;">Nama Lengkap</th>
+                <th style="width: 16%;">No. Identitas</th>
+                <th style="width: 6%;"  class="c">L/P</th>
+                <th style="width: 6%;"  class="c">Usia</th>
+                <th style="width: 13%;">No. HP</th>
+                <th style="width: 15%;">Pulau Tujuan</th>
+                <th style="width: 18%;">Kode Pemesanan</th>
+            </tr>
+        </thead>
+        <tbody>
+            @php $urut = 0; @endphp
+            @foreach ($reservasi as $r)
+                @foreach ($r->peserta as $orang)
+                    @php $urut++; @endphp
+                    <tr class="{{ $urut % 2 === 0 ? 'genap' : '' }}">
+                        <td class="c">{{ $urut }}</td>
+                        <td class="nama">{{ $orang->nama }}</td>
+                        <td>{{ $orang->no_identitas ?: '-' }}</td>
+                        <td class="c">{{ $orang->jenis_kelamin }}</td>
+                        <td class="c">{{ $orang->usia }}</td>
+                        <td>{{ $orang->no_hp ?: '-' }}</td>
+                        <td>{{ $r->pulau->nama }}</td>
+                        <td>{{ $r->kode_booking ?: '-' }}</td>
+                    </tr>
+                @endforeach
+            @endforeach
+
+            @if ($urut === 0)
+                <tr>
+                    <td colspan="8" class="kosong">
+                        Belum ada identitas peserta yang tercatat untuk tanggal ini.
+                    </td>
+                </tr>
+            @endif
+        </tbody>
+    </table>
+
+    @if ($totalPeserta < $totalOrang)
+        <p style="font-size:9px;color:#8e4e14;margin:7px 0 0 0;line-height:1.5;">
+            Catatan: sebagian reservasi pada tanggal ini dibuat sebelum pencatatan identitas
+            peserta diberlakukan, sehingga jumlah baris identitas lebih sedikit daripada jumlah
+            wisatawan. Identitas peserta tersebut perlu ditanyakan langsung sebelum keberangkatan.
+        </p>
+    @endif
 
     <div class="kaki">
         <table>

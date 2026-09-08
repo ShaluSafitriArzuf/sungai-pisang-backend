@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
@@ -37,6 +38,59 @@ class AuthController extends Controller
     // Login lewat Google TIDAK butuh langkah ini — Google sendiri sudah memverifikasi pemilik
     // email itu sebelum mengizinkan login (lihat GoogleAuthController), jadi kita percaya begitu
     // saja (email_verified_at diisi otomatis di sana).
+
+    /**
+     * Memeriksa token reCAPTCHA v2 ke server Google.
+     *
+     * Kotak "Saya bukan robot" di halaman depan hanya menghasilkan token; token itu tidak
+     * membuktikan apa pun sampai diperiksa ke Google dari sisi server memakai kunci rahasia.
+     * Pemeriksaan sengaja dilakukan di sini, bukan di React, karena apa pun yang berjalan di
+     * peramban pengguna bisa dilewati.
+     *
+     * Token bersifat sekali pakai, jadi setiap percobaan login/daftar butuh centang baru.
+     *
+     * Kalau RECAPTCHA_SECRET belum diisi di .env, pemeriksaan dilewati. Ini disengaja supaya
+     * sistem tetap bisa dijalankan di komputer sendiri saat pengembangan, dan sekaligus
+     * menjadi jalan keluar darurat kalau server tidak dapat menghubungi Google.
+     */
+    private function captchaSah(Request $request): bool
+    {
+        $rahasia = config('services.recaptcha.secret');
+
+        if (empty($rahasia)) {
+            return true;
+        }
+
+        $token = $request->input('captcha');
+
+        if (empty($token)) {
+            return false;
+        }
+
+        try {
+            $jawaban = Http::asForm()->timeout(10)->post(
+                'https://www.google.com/recaptcha/api/siteverify',
+                [
+                    'secret' => $rahasia,
+                    'response' => $token,
+                    'remoteip' => $request->ip(),
+                ]
+            );
+        } catch (\Throwable $e) {
+            // Server Google tidak dapat dihubungi. Ditolak, bukan diloloskan begitu saja.
+            return false;
+        }
+
+        return (bool) ($jawaban->json('success') ?? false);
+    }
+
+    private function tolakCaptcha()
+    {
+        return response()->json([
+            'message' => 'Verifikasi keamanan gagal. Centang ulang kotak "Saya bukan robot", lalu coba lagi.',
+        ], 422);
+    }
+
     public function register(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -48,6 +102,10 @@ class AuthController extends Controller
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        if (! $this->captchaSah($request)) {
+            return $this->tolakCaptcha();
         }
 
         $user = User::create([
@@ -76,6 +134,10 @@ class AuthController extends Controller
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        if (! $this->captchaSah($request)) {
+            return $this->tolakCaptcha();
         }
 
         $user = User::where('email', $request->email)->first();

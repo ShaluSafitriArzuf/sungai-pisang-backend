@@ -24,7 +24,7 @@ class ManifestController extends Controller
 
         $reservasi = Reservasi::whereDate('tanggal_kunjungan', $tanggal)
             ->whereIn('status', ['valid', 'selesai'])
-            ->with(['wisatawan', 'pulau', 'akomodasi'])
+            ->with(['wisatawan', 'pulau', 'akomodasi', 'peserta'])
             ->get();
 
         return response()->json([
@@ -52,7 +52,7 @@ class ManifestController extends Controller
 
         $reservasi = Reservasi::whereDate('tanggal_kunjungan', $tanggal)
             ->whereIn('status', ['valid', 'selesai'])
-            ->with(['wisatawan', 'pulau', 'akomodasi'])
+            ->with(['wisatawan', 'pulau', 'akomodasi', 'peserta'])
             ->get();
 
         $pdf = Pdf::loadView('manifest.pdf', [

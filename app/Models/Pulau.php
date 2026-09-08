@@ -19,6 +19,7 @@ class Pulau extends Model
         'badge',
         'latitude',
         'longitude',
+        'batas_koordinat',
         'harga_tiket_masuk_one_day',
         'harga_tiket_masuk_menginap',
         'harga_penyeberangan',
@@ -32,6 +33,7 @@ class Pulau extends Model
     {
         return [
             'fasilitas' => 'array',
+            'batas_koordinat' => 'array',
             'genset_24_jam' => 'boolean',
         ];
     }

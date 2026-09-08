@@ -57,6 +57,12 @@ class PulauController extends Controller
             'regulasi' => 'nullable|string',
             'fasilitas' => 'nullable|array',
             'fasilitas.*' => 'string',
+            // Batas wilayah pulau hasil digitasi: larik titik [lintang, bujur].
+            // Dibatasi 200 titik supaya poligon tetap ringan digambar di peta.
+            'batas_koordinat' => 'nullable|array|max:200',
+            'batas_koordinat.*' => 'array|size:2',
+            'batas_koordinat.*.*' => 'numeric',
+            'hapus_batas' => 'nullable|in:0,1',
         ]);
 
         if ($validator->fails()) {
@@ -64,6 +70,23 @@ class PulauController extends Controller
         }
 
         $data = $validator->validated();
+
+        // Formulir dikirim sebagai FormData, sehingga angka koordinat tiba sebagai teks.
+        // Dijadikan bilangan dulu supaya yang tersimpan di basis data benar-benar angka,
+        // bukan string yang nanti merepotkan saat digambar ulang di peta.
+        if (isset($data['batas_koordinat'])) {
+            $data['batas_koordinat'] = array_values(array_map(
+                fn ($titik) => [(float) $titik[0], (float) $titik[1]],
+                $data['batas_koordinat']
+            ));
+        }
+
+        // Pengelola boleh menghapus batas yang pernah digambar. FormData tidak bisa mengirim
+        // larik kosong, jadi penghapusan dikabarkan lewat penanda tersendiri.
+        unset($data['hapus_batas']);
+        if ($request->input('hapus_batas') === '1') {
+            $data['batas_koordinat'] = null;
+        }
         // Konsisten sama tiket_termasuk di akomodasi: kalau genset_24_jam dinyalain, jadwal
         // manual di jam_operasional_genset ga relevan lagi -- dikosongin biar ga nyisa data lama.
         if ($request->boolean('genset_24_jam')) {

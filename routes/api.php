@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AkomodasiController;
 use App\Http\Controllers\Api\AkomodasiFotoController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\DokumenController;
 use App\Http\Controllers\Api\GaleriFotoController;
 use App\Http\Controllers\Api\GoogleAuthController;
 use App\Http\Controllers\Api\LaporanPemasukanController;
@@ -115,4 +116,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // ── Reservasi: index & show dipakai 3 role sekaligus (filter beda per role, lihat controller) ──
     Route::get('/reservasi', [ReservasiController::class, 'index']);
     Route::get('/reservasi/{reservasi}', [ReservasiController::class, 'show']);
+
+    // Dokumen resmi sebuah reservasi. Boleh diakses pemilik reservasi, Pengantar Pulau,
+    // dan Pengelola Pulau yang bersangkutan — pengecekannya di DokumenController.
+    Route::get('/reservasi/{reservasi}/invoice', [DokumenController::class, 'invoice']);
+    Route::get('/reservasi/{reservasi}/kuitansi', [DokumenController::class, 'kuitansi']);
+    Route::get('/reservasi/{reservasi}/tiket', [DokumenController::class, 'tiket']);
 });

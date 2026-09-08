@@ -40,6 +40,14 @@ return [
     // nilainya dipindah ke kolom harga_penyeberangan pada tabel pulau dan bisa diubah
     // sendiri oleh Pengelola Pulau lewat halaman Kelola Profil Pulau.
 
+    // Kunci rahasia reCAPTCHA v2. Diisi di .env sebagai RECAPTCHA_SECRET.
+    // Kalau dibiarkan kosong, verifikasi captcha DILEWATI (lihat AuthController) —
+    // berguna saat pengembangan di komputer sendiri, tetapi di server produksi
+    // nilai ini wajib diisi supaya kotak "Saya bukan robot" benar-benar berfungsi.
+    'recaptcha' => [
+        'secret' => env('RECAPTCHA_SECRET'),
+    ],
+
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
